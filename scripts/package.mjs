@@ -217,7 +217,7 @@ function msix() {
     console.log("(Windows deyil: exe kopyalanmadı, yalnız manifest sınağı)");
   }
 
-  const icons = ["StoreLogo.png", "Square150x150Logo.png", "Square44x44Logo.png", "Square310x310Logo.png", "Square71x71Logo.png"];
+  const icons = ["StoreLogo.png", "Square150x150Logo.png", "Square44x44Logo.png", "Square71x71Logo.png"];
   for (const f of icons) {
     const src = path.join(TAURI_DIR, "icons", f);
     if (!fs.existsSync(src)) fail(`İkon yoxdur: ${src} (npx tauri icon app-icon.png işə salınıbmı?)`);
