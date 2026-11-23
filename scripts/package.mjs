@@ -41,6 +41,14 @@ function writeUtf8NoBom(file, text) {
   fs.writeFileSync(file, text, { encoding: "utf8" });
 }
 
+// Sınaq rejimi: teq deyil (əl ilə işə salınıb) VƏ imza açarı hələ yoxdur.
+// Niyə lazımdır: açarlar qurulmamışdan əvvəl də Windows yığımının özünü
+// (kompilyasiya, NSIS, makeappx) yoxlaya bilək. Bu rejimdə updater imzası
+// və latest.json yaranmır, MSIX isə saxta kimliklə yığılır — Store-a
+// göndərmək üçün deyil, yalnız manifestin keçdiyini görmək üçün.
+// Teqlə buraxılışda bu rejim heç vaxt açılmır: orada açar mütləqdir.
+const TEST_MODE = process.env.GITHUB_REF_TYPE !== "tag" && !process.env.TAURI_SIGNING_PRIVATE_KEY;
+
 function repoSlug() {
   return process.env.GITHUB_REPOSITORY || "asensoftaz/kalbi-dost-desktop";
 }
@@ -56,6 +64,11 @@ function check() {
     if (tag !== `v${VERSION}`) {
       fail(`Teq "${tag}" ilə tauri.conf.json versiyası "${VERSION}" uyğun gəlmir. Teq v${VERSION} olmalıdır.`);
     }
+  }
+  if (TEST_MODE) {
+    console.log("::warning::SINAQ REJİMİ: imza açarı yoxdur — updater faylları yaranmayacaq, MSIX saxta kimliklə yığılacaq. Bu fayllar paylanmaq üçün deyil.");
+    console.log(`Yoxlama keçdi (sınaq). Versiya ${VERSION}.`);
+    return;
   }
   if (!process.env.TAURI_SIGNING_PRIVATE_KEY) {
     fail("TAURI_SIGNING_PRIVATE_KEY sirri yoxdur (Settings → Secrets and variables → Actions → Secrets). README-yə baxın.");
@@ -75,9 +88,15 @@ function check() {
 // (məs. itsə və yenisi yaradılsa) kodu dəyişmək lazım olmasın.
 // Tauri `--config` faylını əsas konfiqin üstünə birləşdirir.
 function ciConfig() {
+  const out = path.join(TAURI_DIR, "tauri.ci.conf.json");
+  if (TEST_MODE) {
+    // Açar olmadan createUpdaterArtifacts açıq qalsa, Tauri yığımı dayandırır.
+    writeUtf8NoBom(out, JSON.stringify({ bundle: { createUpdaterArtifacts: false } }, null, 2) + "\n");
+    console.log(`Yazıldı (sınaq): ${path.relative(ROOT, out)}`);
+    return;
+  }
   const pubkey = (process.env.TAURI_UPDATER_PUBKEY || "").trim();
   if (!pubkey) fail("TAURI_UPDATER_PUBKEY boşdur.");
-  const out = path.join(TAURI_DIR, "tauri.ci.conf.json");
   writeUtf8NoBom(out, JSON.stringify({ plugins: { updater: { pubkey } } }, null, 2) + "\n");
   console.log(`Yazıldı: ${path.relative(ROOT, out)}`);
 }
@@ -97,11 +116,17 @@ function collect() {
   }
   const setup = path.join(nsisDir, setups[0]);
   const sigFile = `${setup}.sig`;
+
+  fs.mkdirSync(DIST, { recursive: true });
+  if (TEST_MODE) {
+    fs.copyFileSync(setup, path.join(DIST, SETUP_NAME));
+    console.log(`dist/ hazırdır (sınaq, latest.json yoxdur): ${SETUP_NAME}`);
+    return;
+  }
   if (!fs.existsSync(sigFile)) {
     fail("İmza faylı (.sig) yoxdur — createUpdaterArtifacts işləməyib və ya açar verilməyib.");
   }
 
-  fs.mkdirSync(DIST, { recursive: true });
   fs.copyFileSync(setup, path.join(DIST, SETUP_NAME));
   fs.copyFileSync(setup, path.join(DIST, SETUP_STABLE));
   fs.copyFileSync(sigFile, path.join(DIST, `${SETUP_NAME}.sig`));
@@ -130,7 +155,11 @@ function msixIdentity() {
   const name = (process.env.MSIX_IDENTITY_NAME || "").trim();
   const publisher = (process.env.MSIX_PUBLISHER || "").trim();
   const publisherDisplay = (process.env.MSIX_PUBLISHER_DISPLAY_NAME || "").trim();
-  if (!name || !publisher || !publisherDisplay) return null;
+  if (!name || !publisher || !publisherDisplay) {
+    // Sınaq rejimində saxta kimlik: makeappx manifesti yoxlasın deyə.
+    if (TEST_MODE) return { name: "Test.KalBiDost", publisher: "CN=KalBiDostTest", publisherDisplay: "Test", test: true };
+    return null;
+  }
   return { name, publisher, publisherDisplay };
 }
 
@@ -219,7 +248,7 @@ function msix() {
   const makeappx = findMakeAppx();
   if (!makeappx) fail("makeappx.exe tapılmadı (Windows SDK).");
   fs.mkdirSync(DIST, { recursive: true });
-  const out = path.join(DIST, `${FILE_BASE}_${VERSION}_x64.msix`);
+  const out = path.join(DIST, `${FILE_BASE}_${VERSION}_x64${id.test ? "-TEST" : ""}.msix`);
   // /o — köhnə faylın üstünə yaz. Semantik yoxlamanı (/nv) SÖNDÜRMÜRÜK:
   // manifest səhvi Store-da günlərlə gözlədikdən sonra yox, burada çıxsın.
   const r = spawnSync(makeappx, ["pack", "/d", stage, "/p", out, "/o"], { stdio: "inherit" });
