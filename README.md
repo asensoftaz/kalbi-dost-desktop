@@ -55,9 +55,9 @@ Bu dəyişənlər yoxdursa, yığım yenə keçir, sadəcə `.msix` yaradılmır
 ## Buraxılış
 
 1. `src-tauri/tauri.conf.json` → `"version"`-u artırın (sadə `X.Y.Z`).
-2. ```bash
-   git commit -am "v0.1.1" && git tag v0.1.1 && git push && git push --tags
-   ```
+2. Commit edib push edin, sonra iki yoldan biri:
+   - **Actions → release → Run workflow → "Buraxılış et" işarələ → Run** — teqi özü yaradır;
+   - və ya yerli: `git tag v0.1.1 && git push --tags`.
 3. Actions yığır (~10–15 dəq, sonrakılar keş hesabına daha tez) və Release yaradır.
 
 Teq versiya ilə uyğun gəlmirsə və ya sirlər yoxdursa, yığım ilk dəqiqədə aydın səbəblə dayanır.

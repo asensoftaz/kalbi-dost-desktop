@@ -2,8 +2,11 @@
 #
 # Nə vaxt işləyir:
 #   • v* teqi push olunanda (məs. v0.1.0) → yığır və GitHub Release yaradır.
-#   • Actions səhifəsindən əl ilə (workflow_dispatch) → yalnız yığır, faylları
-#     "Artifacts" kimi saxlayır, buraxılış YARATMIR. Sınaq üçün.
+#   • Actions səhifəsindən əl ilə (workflow_dispatch):
+#       - "publish" seçilməyib → yalnız yığır, faylları "Artifacts" kimi saxlayır.
+#       - "publish" seçilib → teqi (v<versiya>) özü yaradır və buraxılış edir.
+#         Niyə lazımdır: teqi yerli komputerdən push etmək hər dəfə mümkün
+#         olmur; bu yol yalnız GitHub səhifəsindən (və ya API-dən) işləyir.
 #
 # Çıxış:
 #   KalBi-Dost_<v>_x64-setup.exe   — imzasız quraşdırıcı (versiyalı)
@@ -17,6 +20,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Buraxılış et (tauri.conf.json-dakı versiya ilə teq yaradılır)"
+        type: boolean
+        default: false
 
 # Release yaratmaq və fayl yükləmək üçün.
 permissions:
@@ -38,6 +46,7 @@ jobs:
       MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
       MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
       MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+      PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
     defaults:
       run:
         shell: bash
@@ -53,6 +62,20 @@ jobs:
       # Səhv olsa 10 dəqiqə sonra yox, dərhal dayansın.
       - name: Yoxlamalar
         run: node scripts/package.mjs check
+
+      # Əl ilə buraxılışda eyni versiyanı ikinci dəfə buraxmırıq: artıq
+      # quraşdırılmış tətbiqlər "yeni versiya" görməz, Store da eyni versiyanı
+      # qəbul etməz. Versiyanı artırmaq unudulubsa, burada dayansın.
+      - name: Versiya artıq buraxılıbmı
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if gh release view "v$V" >/dev/null 2>&1; then
+            echo "::error::v$V artıq buraxılıb. src-tauri/tauri.conf.json-da versiyanı artırın."
+            exit 1
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -100,14 +123,19 @@ jobs:
           path: target-msix/stage/
 
       - name: GitHub Release
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          fi
           # Təkrar işə salınanda (re-run) release artıq var — faylları əvəz edirik.
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" dist/* --title "KalBi Dost ${TAG#v}" --generate-notes
+            # --target: teq yoxdursa, məhz bu yığımın commit-inə yaradılır.
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "KalBi Dost ${TAG#v}" --generate-notes
           fi

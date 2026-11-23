@@ -46,8 +46,9 @@ function writeUtf8NoBom(file, text) {
 // (kompilyasiya, NSIS, makeappx) yoxlaya bilək. Bu rejimdə updater imzası
 // və latest.json yaranmır, MSIX isə saxta kimliklə yığılır — Store-a
 // göndərmək üçün deyil, yalnız manifestin keçdiyini görmək üçün.
-// Teqlə buraxılışda bu rejim heç vaxt açılmır: orada açar mütləqdir.
-const TEST_MODE = process.env.GITHUB_REF_TYPE !== "tag" && !process.env.TAURI_SIGNING_PRIVATE_KEY;
+// Buraxılışda (teq və ya "publish" seçimi) bu rejim heç vaxt açılmır: orada açar mütləqdir.
+const IS_RELEASE = process.env.GITHUB_REF_TYPE === "tag" || process.env.PUBLISH === "true";
+const TEST_MODE = !IS_RELEASE && !process.env.TAURI_SIGNING_PRIVATE_KEY;
 
 function repoSlug() {
   return process.env.GITHUB_REPOSITORY || "asensoftaz/kalbi-dost-desktop";
