@@ -1,0 +1,10 @@
+node_modules/
+dist/
+target-msix/
+src-tauri/target/
+src-tauri/gen/
+# CI-da yaradılır (updater açıq açarı Actions dəyişənindən gəlir)
+src-tauri/tauri.ci.conf.json
+# Açarlar heç vaxt repoya düşməsin
+*.key
+*.key.pub

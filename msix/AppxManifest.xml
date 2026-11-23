@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Microsoft Store (MSIX) paketinin manifesti — şablon.
+  {{...}} yerləri yığım zamanı scripts/package.mjs tərəfindən doldurulur.
+
+  Niyə MSIX: Store MSIX-i Microsoft özü imzalayır, pullu sertifikat lazım deyil.
+  Store-a .exe/.msi göndərmək isə bizim tərəfdən kod imzası tələb edir.
+
+  Niyə EntryPoint="Windows.FullTrustApplication" (uap10:RuntimeBehavior yox):
+  Windows 10 2004-dən köhnə sistemlərdə də quraşdırılsın (MinVersion 1809).
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <!-- Name və Publisher Partner Center → Product identity bölməsindəki ilə hərfi-hərfinə eyni olmalıdır. -->
+  <Identity
+    Name="{{IDENTITY_NAME}}"
+    Publisher="{{PUBLISHER}}"
+    Version="{{VERSION}}"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>{{DISPLAY_NAME}}</DisplayName>
+    <PublisherDisplayName>{{PUBLISHER_DISPLAY_NAME}}</PublisherDisplayName>
+    <Description>{{DESCRIPTION}}</Description>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <!--
+    Yalnız en-us: Partner Center paketdə elan olunan hər dil üçün Store
+    səhifəsi (listing) gözləyir. Tətbiqin öz dili saytdan gəlir, bu siyahıdan
+    asılı deyil. Başqa dil əlavə etsəniz, Partner Center-də o dilin səhifəsini
+    də doldurun.
+  -->
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <!--
+    runFullTrust: adi masaüstü proqramı kimi işləmək üçün (Tauri/WebView2 bunu tələb edir).
+    Store yoxlamasında bu "restricted capability" üçün izah istənir — README-də hazır mətn var.
+  -->
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+
+  <Applications>
+    <Application Id="KalBiDost" Executable="kalbi-dost.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="{{DISPLAY_NAME}}"
+        Description="{{DESCRIPTION}}"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Square310x310Logo="Assets\Square310x310Logo.png" Square71x71Logo="Assets\Square71x71Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+</Package>

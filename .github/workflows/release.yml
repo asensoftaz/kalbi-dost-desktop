@@ -1,0 +1,113 @@
+# Windows yığımı və buraxılış.
+#
+# Nə vaxt işləyir:
+#   • v* teqi push olunanda (məs. v0.1.0) → yığır və GitHub Release yaradır.
+#   • Actions səhifəsindən əl ilə (workflow_dispatch) → yalnız yığır, faylları
+#     "Artifacts" kimi saxlayır, buraxılış YARATMIR. Sınaq üçün.
+#
+# Çıxış:
+#   KalBi-Dost_<v>_x64-setup.exe   — imzasız quraşdırıcı (versiyalı)
+#   KalBi-Dost-Setup.exe           — eyni fayl, sabit adla (saytdakı düymə üçün)
+#   KalBi-Dost_<v>_x64-setup.exe.sig, latest.json — Tauri updater üçün
+#   KalBi-Dost_<v>_x64.msix        — Microsoft Store üçün (MSIX_* dəyişənləri varsa)
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Release yaratmaq və fayl yükləmək üçün.
+permissions:
+  contents: write
+
+# Eyni teq üçün iki yığım paralel getməsin (fayllar bir-birini əvəz edərdi).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+      MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+      MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+      MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Uzun Rust yığımından ƏVVƏL: versiya/teq uyğunluğu və sirlər.
+      # Səhv olsa 10 dəqiqə sonra yox, dərhal dayansın.
+      - name: Yoxlamalar
+        run: node scripts/package.mjs check
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Təkrar yığımlarda asılılıqlar yenidən kompilyasiya olunmasın (~10 dəq → ~3 dəq).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: npm ci
+        run: npm ci
+
+      # İkonlar hər dəfə app-icon.png-dən yaradılır: loqonu dəyişmək üçün
+      # yalnız o bir faylı əvəz etmək kifayətdir.
+      - name: İkonlar
+        run: |
+          npx tauri icon app-icon.png
+          rm -rf src-tauri/icons/android src-tauri/icons/ios
+
+      - name: Updater açarı
+        run: node scripts/package.mjs ci-config
+
+      - name: Yığım (NSIS)
+        run: npx tauri build --config src-tauri/tauri.ci.conf.json
+
+      - name: Faylları topla (+ latest.json)
+        run: node scripts/package.mjs collect
+
+      - name: MSIX (Store)
+        run: node scripts/package.mjs msix
+
+      - name: Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kalbi-dost-${{ github.ref_name }}
+          path: dist/
+          if-no-files-found: error
+
+      # MSIX-in açılmış qovluğu: Windows-da Developer Mode ilə imzasız
+      # quraşdırıb Store rejimini sınamaq üçün (README → "MSIX-i yerli sınamaq").
+      - name: Artifacts (MSIX qovluğu)
+        if: hashFiles('target-msix/stage/AppxManifest.xml') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: kalbi-dost-msix-stage-${{ github.ref_name }}
+          path: target-msix/stage/
+
+      - name: GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Təkrar işə salınanda (re-run) release artıq var — faylları əvəz edirik.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "KalBi Dost ${TAG#v}" --generate-notes
+          fi
