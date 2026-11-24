@@ -42,15 +42,7 @@ GitHub → repo → **Settings → Secrets and variables → Actions**:
 
 ### 2. Microsoft Store kimliyi (MSIX üçün)
 Partner Center → **Apps and games → New product → MSIX or PWA app** (⚠ "EXE or MSI app" yox — o yol pullu kod imzası tələb edir) → adı rezerv edin (məs. "KalBi Dost").
-Sonra məhsulun **Product management → Product identity** səhifəsindən üç dəyəri **Variables**-a köçürün:
-
-| Ad | Product identity-dəki sahə | Nümunə |
-|---|---|---|
-| `MSIX_IDENTITY_NAME` | Package/Identity/Name | `12345Asensoft.KalBiDost` |
-| `MSIX_PUBLISHER` | Package/Identity/Publisher | `CN=XXXXXXXX-XXXX-...` |
-| `MSIX_PUBLISHER_DISPLAY_NAME` | Package/Properties/PublisherDisplayName | `Asensoft` |
-
-Bu dəyişənlər yoxdursa, yığım yenə keçir, sadəcə `.msix` yaradılmır.
+Kimlik dəyərləri `msix/identity.json` faylındadır (Partner Center → **Product identity**; Store ID `9P35Z6SFB604`). Bunlar sirr deyil — hər MSIX manifestində açıq yazılır. Actions dəyişənləri `MSIX_IDENTITY_NAME`, `MSIX_PUBLISHER`, `MSIX_PUBLISHER_DISPLAY_NAME` verilsə, fayldan üstün tutulur.
 
 ## Buraxılış
 

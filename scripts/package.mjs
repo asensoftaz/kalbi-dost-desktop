@@ -79,7 +79,7 @@ function check() {
   }
   const msix = msixIdentity();
   if (!msix) {
-    console.log("::warning::MSIX_* dəyişənləri təyin olunmayıb — Store paketi (.msix) bu dəfə yığılmayacaq, yalnız .exe.");
+    console.log("::warning::Store kimliyi yoxdur (msix/identity.json) — Store paketi (.msix) bu dəfə yığılmayacaq, yalnız .exe.");
   }
   console.log(`Yoxlama keçdi. Versiya ${VERSION}.`);
 }
@@ -152,16 +152,24 @@ function collect() {
 }
 
 // ── msix ─────────────────────────────────────────────────────────────────
+// Store kimliyi. Mənbə: msix/identity.json (Partner Center → Product identity).
+// Niyə repoda, sirlərdə yox: bu dəyərlər gizli deyil — hər MSIX paketinin manifestində
+// açıq yazılır və Store səhifəsindən də görünür. Repoda olanda dəyişikliyin tarixi
+// git-də qalır. Actions dəyişənləri (MSIX_*) verilibsə, onlar fayldan üstündür —
+// məs. sınaq üçün başqa Store məhsulu ilə yığmaq lazım olsa.
 function msixIdentity() {
-  const name = (process.env.MSIX_IDENTITY_NAME || "").trim();
-  const publisher = (process.env.MSIX_PUBLISHER || "").trim();
-  const publisherDisplay = (process.env.MSIX_PUBLISHER_DISPLAY_NAME || "").trim();
+  let file = {}
+  const f = path.join(ROOT, "msix", "identity.json")
+  if (fs.existsSync(f)) file = JSON.parse(fs.readFileSync(f, "utf8"))
+  const name = (process.env.MSIX_IDENTITY_NAME || file.name || "").trim()
+  const publisher = (process.env.MSIX_PUBLISHER || file.publisher || "").trim()
+  const publisherDisplay = (process.env.MSIX_PUBLISHER_DISPLAY_NAME || file.publisherDisplayName || "").trim()
   if (!name || !publisher || !publisherDisplay) {
     // Sınaq rejimində saxta kimlik: makeappx manifesti yoxlasın deyə.
-    if (TEST_MODE) return { name: "Test.KalBiDost", publisher: "CN=KalBiDostTest", publisherDisplay: "Test", test: true };
-    return null;
+    if (TEST_MODE) return { name: "Test.KalBiDost", publisher: "CN=KalBiDostTest", publisherDisplay: "Test", test: true }
+    return null
   }
-  return { name, publisher, publisherDisplay };
+  return { name, publisher, publisherDisplay }
 }
 
 function xmlEscape(s) {
@@ -197,7 +205,7 @@ function findMakeAppx() {
 function msix() {
   const id = msixIdentity();
   if (!id) {
-    console.log("MSIX_* dəyişənləri yoxdur — MSIX addımı ötürülür.");
+    console.log("Store kimliyi yoxdur — MSIX addımı ötürülür.");
     return;
   }
   if (!/^CN=/.test(id.publisher)) {
