@@ -413,6 +413,8 @@ impl Bridge {
                 s.device_id = device_id;
             })
             .map_err(|e| PairError::Code(format!("save_failed: {e}")))?;
+        // Pəncərə dərhal "qoşulur" göstərsin (köhnə Revoked/Unpaired yox).
+        self.inner.set_status(Status::Connecting);
         // Əsas dövr qoşulmanı gözləyir — oyat.
         self.inner.wake.notify_one();
         Ok(name)

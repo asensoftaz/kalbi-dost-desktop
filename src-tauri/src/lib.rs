@@ -1,13 +1,18 @@
-//! KalBi Dost masaüstü qabığı — 1-ci mərhələ.
+//! KalBi Dost masaüstü qabığı.
 //!
-//! Nə edir: dost.kalbi.pro-nu öz pəncərəsində açır, bağlananda tray-ə
+//! 1-ci mərhələ: dost.kalbi.pro-nu öz pəncərəsində açır, bağlananda tray-ə
 //! kiçilir, Store-dan kənar versiyada özünü yeniləyir.
+//! 2-ci mərhələ: körpü — bot seçilmiş qovluqlarda faylları siyahılaya,
+//! oxuya, axtara və (təsdiqlə) yaza bilir (bridge.rs + bridge_ui.rs).
 //!
-//! Nə ETMİR (qəsdən): sayta heç bir Tauri əmri (IPC) açılmır — capabilities
-//! qovluğu yoxdur. Uzaq sayt nə fayla, nə terminala çata bilər. Körpü
-//! 2-ci mərhələdə ayrıca, yalnız dost.kalbi.pro üçün və təsdiq pəncərəsi ilə
-//! əlavə olunacaq. Ona görə bu mərhələdə hücum səthi adi brauzer tabı qədərdir.
+//! Sayta (əsas pəncərə) yenə heç bir Tauri əmri açılmır: körpü komandaları
+//! build.rs-də ACL altına alınıb və capabilities/bridge.json onları yalnız
+//! tətbiqin öz lokal pəncərələrinə (`bridge`, `approve-*`) verir. Bot işi
+//! saytdan yox, serverdən (Supabase) gəlir; təsdiq pəncərəsi tətbiqindir.
+//! Ona görə sayt nə fayla çata, nə də yazmanı özü təsdiqləyə bilər.
 
+mod bridge;
+mod bridge_ui;
 mod i18n;
 mod store;
 mod update;
@@ -21,6 +26,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::i18n::texts;
 
 const MAIN: &str = "main";
+pub(crate) const TRAY_ID: &str = "main-tray";
 const START_URL: &str = "https://dost.kalbi.pro";
 
 pub fn run() {
@@ -34,7 +40,19 @@ pub fn run() {
             show_main(app);
         }))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        // Körpünün lokal səhifələri (qoşma, təsdiq) — .exe-nin içindən.
+        .register_uri_scheme_protocol(bridge_ui::SCHEME, bridge_ui::serve)
+        .invoke_handler(tauri::generate_handler![
+            bridge_ui::bridge_state,
+            bridge_ui::bridge_pair,
+            bridge_ui::bridge_unlink,
+            bridge_ui::bridge_add_folder,
+            bridge_ui::bridge_remove_folder,
+            bridge_ui::bridge_set_read_policy,
+            bridge_ui::approval_get,
+            bridge_ui::approval_decide,
+        ]);
 
     // Store versiyasında updater plugin-i heç qeydiyyata alınmır — onu
     // təsadüfən çağırmaq belə mümkün olmasın (bax store.rs).
@@ -45,7 +63,9 @@ pub fn run() {
     builder
         .setup(move |app| {
             create_main_window(app.handle(), packaged)?;
-            create_tray(app.handle(), packaged)?;
+            // Körpü tray-dən əvvəl: tray menyusu körpünün açıq olub-olmadığına baxır.
+            let bridge_on = bridge_ui::init(app.handle())?;
+            create_tray(app.handle(), packaged, bridge_on)?;
             if !packaged {
                 update::start_background(app.handle().clone());
             }
@@ -55,11 +75,16 @@ pub fn run() {
             // Pəncərəni bağlamaq tətbiqdən çıxmaq deyil: bot tray-də qalır ki,
             // sonrakı mərhələlərdə gələn işləri (fayl, terminal) götürə bilsin.
             // Tam çıxış yalnız tray menyusundakı "Çıx" ilədir.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == MAIN {
+            match event {
+                WindowEvent::CloseRequested { api, .. } if window.label() == MAIN => {
                     api.prevent_close();
                     let _ = window.hide();
                 }
+                // Təsdiq pəncərəsi X ilə bağlandı → rədd (bridge_ui).
+                WindowEvent::Destroyed => {
+                    bridge_ui::on_window_destroyed(window.app_handle(), window.label());
+                }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())
@@ -100,29 +125,37 @@ fn create_main_window(app: &AppHandle, packaged: bool) -> tauri::Result<()> {
     Ok(())
 }
 
-fn create_tray(app: &AppHandle, packaged: bool) -> tauri::Result<()> {
+fn create_tray(app: &AppHandle, packaged: bool, bridge_on: bool) -> tauri::Result<()> {
     let t = texts();
 
     let open = MenuItem::with_id(app, "open", t.tray_open, true, None::<&str>)?;
+    let bridge = MenuItem::with_id(app, "bridge", t.tray_bridge, true, None::<&str>)?;
+    let check = MenuItem::with_id(app, "check", t.tray_check_updates, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", t.tray_quit, true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
 
     // Store versiyasında "Yeniləmələri yoxla" göstərilmir — orada yeniləməni
-    // Store edir, düymə heç nə etməzdi.
-    let menu = if packaged {
-        Menu::with_items(app, &[&open, &sep, &quit])?
-    } else {
-        let check = MenuItem::with_id(app, "check", t.tray_check_updates, true, None::<&str>)?;
-        Menu::with_items(app, &[&open, &check, &sep, &quit])?
-    };
+    // Store edir, düymə heç nə etməzdi. Körpü bu yığımda sönülüdürsə
+    // (Supabase dəyişənləri yoxdur) onun bəndi də göstərilmir.
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&open];
+    if bridge_on {
+        items.push(&bridge);
+    }
+    if !packaged {
+        items.push(&check);
+    }
+    items.push(&sep);
+    items.push(&quit);
+    let menu = Menu::with_items(app, &items)?;
 
-    let mut tray = TrayIconBuilder::with_id("main-tray")
+    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip(t.tray_tooltip)
         .menu(&menu)
         // Sol klik pəncərəni açır, menyu sağ kliklədir — Windows vərdişi belədir.
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main(app),
+            "bridge" => bridge_ui::open_bridge_window(app),
             "check" => update::check_manual(app.clone()),
             "quit" => app.exit(0),
             _ => {}

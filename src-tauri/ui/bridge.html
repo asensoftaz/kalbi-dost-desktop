@@ -1,0 +1,402 @@
+<!doctype html>
+<!--
+  Körpü pəncərəsi (tray → "Kompüter körpüsü"): qoşma kodu, qovluqlar, status.
+  Tətbiqin içindən kdost:// ilə verilir (bridge_ui.rs), şəbəkədən heç nə yükləmir.
+  Bazadan/botdan gələn mətnlər YALNIZ textContent ilə yazılır (innerHTML yox) —
+  qovluq və ya cihaz adı HTML/skript kimi işə düşməsin.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KalBi Dost</title>
+<style>
+  :root {
+    --bg: #14121a; --panel: #1d1a25; --raise: #26222f; --line: #332e3f;
+    --tx: #ece9f3; --tx2: #9a93a8; --acc: #7c5cff; --acc2: #a48bff;
+    --ok: #3ccf8e; --warn: #f2b84b; --err: #ef5a4f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--tx);
+    font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  body { padding: 20px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--tx2); margin: 0 0 18px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--tx2); margin: 0 0 10px; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .grow { flex: 1; min-width: 0; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--tx2); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
+  label { display: block; color: var(--tx2); font-size: 12px; margin: 10px 0 4px; }
+  input[type=text] { width: 100%; background: var(--raise); border: 1px solid var(--line);
+    color: var(--tx); border-radius: 8px; padding: 9px 11px; font: inherit; }
+  input#code { font: 600 20px/1.2 Consolas, monospace; letter-spacing: .12em; text-align: center; text-transform: uppercase; }
+  input:focus { outline: 2px solid var(--acc); outline-offset: -1px; }
+  button { font: inherit; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--raise); color: var(--tx); }
+  button:hover { border-color: var(--acc2); }
+  button.primary { background: var(--acc); border-color: var(--acc); color: #fff; font-weight: 600; }
+  button.danger { color: var(--err); }
+  button:disabled { opacity: .5; cursor: default; }
+  .full { width: 100%; margin-top: 14px; padding: 10px; }
+  .err { color: var(--err); margin-top: 8px; }
+  .err:empty { display: none; }
+  .muted { color: var(--tx2); }
+  .small { font-size: 12px; }
+  ul.folders { list-style: none; margin: 0; padding: 0; }
+  ul.folders li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  ul.folders li:first-child { border-top: 0; }
+  .fname { font-weight: 600; }
+  .fpath { color: var(--tx2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .x { padding: 4px 9px; }
+  ol.steps { margin: 6px 0 0; padding-left: 20px; color: var(--tx2); }
+  pre.act { margin: 0; max-height: 150px; overflow: auto; font: 12px/1.5 Consolas, monospace; color: var(--tx2); white-space: pre-wrap; }
+  .check { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+  .check input { margin-top: 3px; accent-color: var(--acc); }
+  .hidden { display: none !important; }
+  footer { color: var(--tx2); font-size: 11px; text-align: center; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <h1 id="t_title"></h1>
+  <p class="sub" id="t_sub"></p>
+
+  <!-- Bu yığımda körpü sönülüdür (Supabase dəyişənləri yoxdur) -->
+  <div id="v_disabled" class="card hidden"><span id="t_disabled"></span></div>
+
+  <!-- Qoşulmayıb / ayrılıb -->
+  <div id="v_pair" class="hidden">
+    <div id="revoked_note" class="card hidden"><span class="row"><span class="dot err"></span><span id="t_revoked"></span></span></div>
+    <div class="card">
+      <h2 id="t_pair_h"></h2>
+      <ol class="steps"><li id="t_step1"></li><li id="t_step2"></li></ol>
+      <label for="code" id="t_code"></label>
+      <input id="code" type="text" maxlength="9" autocomplete="off" spellcheck="false" placeholder="ABCD-EFGH">
+      <label for="dname" id="t_name"></label>
+      <input id="dname" type="text" maxlength="60" autocomplete="off">
+      <button id="b_pair" class="primary full"></button>
+      <div id="pair_err" class="err"></div>
+    </div>
+  </div>
+
+  <!-- Qoşulub -->
+  <div id="v_main" class="hidden">
+    <div class="card">
+      <div class="row">
+        <span id="st_dot" class="dot"></span>
+        <div class="grow">
+          <div id="st_name" class="fname"></div>
+          <div id="st_text" class="muted small"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 id="t_folders"></h2>
+      <p id="t_folders_none" class="muted small hidden"></p>
+      <ul id="folders" class="folders"></ul>
+      <button id="b_add" class="full"></button>
+      <div id="folder_err" class="err"></div>
+      <p class="muted small" id="t_folders_hint"></p>
+    </div>
+
+    <div class="card">
+      <h2 id="t_perm"></h2>
+      <label class="check"><input type="checkbox" id="ask_read"><span><span id="t_ask_read"></span><br><span class="muted small" id="t_ask_read_hint"></span></span></label>
+      <p class="muted small" id="t_write_always"></p>
+    </div>
+
+    <div class="card">
+      <h2 id="t_activity"></h2>
+      <pre id="act" class="act"></pre>
+    </div>
+
+    <button id="b_unlink" class="danger full"></button>
+  </div>
+
+  <footer id="ver"></footer>
+
+<script>
+"use strict";
+// Mətnlər (az/tr/ru/en/zh). Dil Rust-dan ?lang= ilə gəlir (i18n::lang_code).
+const L = {
+  az: {
+    title: "Kompüter körpüsü",
+    sub: "Bot yalnız sizin seçdiyiniz qovluqlarda faylları görə bilər. Faylı dəyişməzdən əvvəl həmişə icazə soruşur.",
+    disabled: "Bu versiyada körpü aktiv deyil. Tətbiqi yeniləyin.",
+    revoked: "Bu kompüter saytda ayrılıb. Yenidən qoşmaq üçün yeni kod daxil edin.",
+    pair_h: "Kompüteri qoşun", step1: "dost.kalbi.pro → Ayarlar → Cihazlarım → «Kompüter qoş».",
+    step2: "Saytda görünən 8 simvollu kodu buraya yazın (10 dəqiqə etibarlıdır).",
+    code: "Qoşma kodu", name: "Kompüterin adı (saytda belə görünəcək)", pair: "Qoş",
+    pairing: "Qoşulur…", folders: "Bot üçün qovluqlar",
+    folders_none: "Hələ qovluq seçilməyib — bot heç bir faylı görmür.",
+    add: "+ Qovluq əlavə et", folders_hint: "Bütün disk və ya istifadəçi qovluğunun özü seçilə bilməz — Sənədlər, Endirmələr kimi alt qovluq seçin.",
+    perm: "İcazələr", ask_read: "Faylı oxumazdan əvvəl soruş",
+    ask_read_hint: "Söndürsəniz, bot seçilmiş qovluqlardakı faylları soruşmadan oxuya bilər. Siyahı və axtarış həmişə soruşmadan işləyir (yalnız adlar).",
+    write_always: "Fayl yazmaq və dəyişmək üçün icazə HƏMİŞƏ soruşulur.",
+    activity: "Son əməliyyatlar", activity_none: "Hələ əməliyyat yoxdur.",
+    unlink: "Bu kompüteri ayır", unlink_confirm: "Əminsiniz? Bir də basın.",
+    remove: "Sil",
+    st_online_live: "Qoşulub — bot sorğularını dərhal alır",
+    st_online_poll: "Qoşulub — sorğular 30 saniyəyədək gecikə bilər",
+    st_offline: "İnternet və ya server yoxdur — özü yenidən qoşulacaq",
+    st_connecting: "Qoşulur…",
+    e_invalid_code: "Kod səhvdir. Saytdakı kodu yoxlayın.", e_expired_code: "Kodun vaxtı bitib. Saytda yeni kod alın.",
+    e_device_limit: "Ən çox 5 kompüter qoşmaq olar. Saytda köhnəsini ayırın.",
+    e_try_later: "Çox cəhd oldu. Bir dəqiqə sonra yenidən yoxlayın.",
+    e_network: "Serverə qoşulmaq alınmadı. İnterneti yoxlayın.",
+    e_already_added: "Bu qovluq artıq əlavə olunub.", e_too_broad: "Bu qovluq çox genişdir — alt qovluq seçin.",
+    e_not_a_directory: "Bu qovluq deyil.", e_short: "Kod 8 simvol olmalıdır.", e_other: "Alınmadı: ",
+    ver: "Versiya "
+  },
+  tr: {
+    title: "Bilgisayar köprüsü",
+    sub: "Bot yalnızca seçtiğiniz klasörlerdeki dosyaları görebilir. Bir dosyayı değiştirmeden önce her zaman izin ister.",
+    disabled: "Bu sürümde köprü etkin değil. Uygulamayı güncelleyin.",
+    revoked: "Bu bilgisayarın sitede bağlantısı kesildi. Yeniden bağlamak için yeni kod girin.",
+    pair_h: "Bilgisayarı bağlayın", step1: "dost.kalbi.pro → Ayarlar → Cihazlarım → «Bilgisayar bağla».",
+    step2: "Sitede görünen 8 karakterli kodu buraya yazın (10 dakika geçerlidir).",
+    code: "Bağlantı kodu", name: "Bilgisayarın adı (sitede böyle görünecek)", pair: "Bağla",
+    pairing: "Bağlanıyor…", folders: "Bot için klasörler",
+    folders_none: "Henüz klasör seçilmedi — bot hiçbir dosyayı görmüyor.",
+    add: "+ Klasör ekle", folders_hint: "Tüm disk veya kullanıcı klasörünün kendisi seçilemez — Belgeler, İndirilenler gibi bir alt klasör seçin.",
+    perm: "İzinler", ask_read: "Dosyayı okumadan önce sor",
+    ask_read_hint: "Kapatırsanız bot, seçili klasörlerdeki dosyaları sormadan okuyabilir. Listeleme ve arama her zaman sormadan çalışır (yalnızca adlar).",
+    write_always: "Dosya yazmak ve değiştirmek için izin HER ZAMAN sorulur.",
+    activity: "Son işlemler", activity_none: "Henüz işlem yok.",
+    unlink: "Bu bilgisayarın bağlantısını kes", unlink_confirm: "Emin misiniz? Tekrar basın.",
+    remove: "Kaldır",
+    st_online_live: "Bağlı — bot istekleri anında alınır",
+    st_online_poll: "Bağlı — istekler 30 saniyeye kadar gecikebilir",
+    st_offline: "İnternet veya sunucu yok — kendiliğinden yeniden bağlanacak",
+    st_connecting: "Bağlanıyor…",
+    e_invalid_code: "Kod hatalı. Sitedeki kodu kontrol edin.", e_expired_code: "Kodun süresi doldu. Sitede yeni kod alın.",
+    e_device_limit: "En fazla 5 bilgisayar bağlanabilir. Sitede eskisini kaldırın.",
+    e_try_later: "Çok fazla deneme. Bir dakika sonra tekrar deneyin.",
+    e_network: "Sunucuya bağlanılamadı. İnterneti kontrol edin.",
+    e_already_added: "Bu klasör zaten ekli.", e_too_broad: "Bu klasör çok geniş — bir alt klasör seçin.",
+    e_not_a_directory: "Bu bir klasör değil.", e_short: "Kod 8 karakter olmalı.", e_other: "Olmadı: ",
+    ver: "Sürüm "
+  },
+  ru: {
+    title: "Мост с компьютером",
+    sub: "Бот видит файлы только в выбранных вами папках. Перед изменением файла он всегда спрашивает разрешение.",
+    disabled: "В этой версии мост не активен. Обновите приложение.",
+    revoked: "Этот компьютер отключён на сайте. Чтобы подключить снова, введите новый код.",
+    pair_h: "Подключите компьютер", step1: "dost.kalbi.pro → Настройки → Мои устройства → «Подключить компьютер».",
+    step2: "Введите сюда 8-значный код с сайта (действует 10 минут).",
+    code: "Код подключения", name: "Имя компьютера (так он будет виден на сайте)", pair: "Подключить",
+    pairing: "Подключение…", folders: "Папки для бота",
+    folders_none: "Папки ещё не выбраны — бот не видит ни одного файла.",
+    add: "+ Добавить папку", folders_hint: "Нельзя выбрать весь диск или саму папку пользователя — выберите вложенную, например «Документы» или «Загрузки».",
+    perm: "Разрешения", ask_read: "Спрашивать перед чтением файла",
+    ask_read_hint: "Если выключить, бот сможет читать файлы в выбранных папках без вопроса. Список и поиск всегда работают без вопроса (только имена).",
+    write_always: "Разрешение на запись и изменение файлов спрашивается ВСЕГДА.",
+    activity: "Последние действия", activity_none: "Действий пока нет.",
+    unlink: "Отключить этот компьютер", unlink_confirm: "Вы уверены? Нажмите ещё раз.",
+    remove: "Убрать",
+    st_online_live: "Подключён — запросы бота приходят сразу",
+    st_online_poll: "Подключён — запросы могут задерживаться до 30 секунд",
+    st_offline: "Нет интернета или сервера — переподключится сам",
+    st_connecting: "Подключение…",
+    e_invalid_code: "Неверный код. Проверьте код на сайте.", e_expired_code: "Срок кода истёк. Получите новый на сайте.",
+    e_device_limit: "Можно подключить не больше 5 компьютеров. Отключите старый на сайте.",
+    e_try_later: "Слишком много попыток. Попробуйте через минуту.",
+    e_network: "Не удалось связаться с сервером. Проверьте интернет.",
+    e_already_added: "Эта папка уже добавлена.", e_too_broad: "Папка слишком широкая — выберите вложенную.",
+    e_not_a_directory: "Это не папка.", e_short: "Код должен содержать 8 символов.", e_other: "Не удалось: ",
+    ver: "Версия "
+  },
+  en: {
+    title: "Computer bridge",
+    sub: "The bot can only see files in folders you choose. It always asks before changing a file.",
+    disabled: "The bridge is not active in this version. Please update the app.",
+    revoked: "This computer was unlinked on the website. Enter a new code to link it again.",
+    pair_h: "Link this computer", step1: "dost.kalbi.pro → Settings → My devices → “Link a computer”.",
+    step2: "Type the 8-character code shown there (valid for 10 minutes).",
+    code: "Link code", name: "Computer name (shown on the website)", pair: "Link",
+    pairing: "Linking…", folders: "Folders for the bot",
+    folders_none: "No folders yet — the bot cannot see any files.",
+    add: "+ Add folder", folders_hint: "A whole drive or your user folder itself can’t be chosen — pick a subfolder such as Documents or Downloads.",
+    perm: "Permissions", ask_read: "Ask before reading a file",
+    ask_read_hint: "If turned off, the bot can read files in the chosen folders without asking. Listing and search never ask (names only).",
+    write_always: "Writing or changing a file ALWAYS asks for permission.",
+    activity: "Recent activity", activity_none: "No activity yet.",
+    unlink: "Unlink this computer", unlink_confirm: "Are you sure? Click again.",
+    remove: "Remove",
+    st_online_live: "Connected — bot requests arrive instantly",
+    st_online_poll: "Connected — requests may take up to 30 seconds",
+    st_offline: "No internet or server — will reconnect by itself",
+    st_connecting: "Connecting…",
+    e_invalid_code: "Wrong code. Check the code on the website.", e_expired_code: "The code has expired. Get a new one on the website.",
+    e_device_limit: "You can link up to 5 computers. Unlink an old one on the website.",
+    e_try_later: "Too many attempts. Try again in a minute.",
+    e_network: "Could not reach the server. Check your internet.",
+    e_already_added: "This folder is already added.", e_too_broad: "This folder is too broad — pick a subfolder.",
+    e_not_a_directory: "That is not a folder.", e_short: "The code must be 8 characters.", e_other: "Failed: ",
+    ver: "Version "
+  },
+  zh: {
+    title: "电脑桥接",
+    sub: "机器人只能看到您选择的文件夹中的文件。修改文件前总会先征求您的许可。",
+    disabled: "此版本未启用桥接。请更新应用。",
+    revoked: "此电脑已在网站上断开。请输入新代码重新连接。",
+    pair_h: "连接此电脑", step1: "dost.kalbi.pro → 设置 → 我的设备 → “连接电脑”。",
+    step2: "在此输入网站上显示的 8 位代码（10 分钟内有效）。",
+    code: "连接代码", name: "电脑名称（将在网站上显示）", pair: "连接",
+    pairing: "正在连接…", folders: "机器人可用的文件夹",
+    folders_none: "尚未选择文件夹 — 机器人看不到任何文件。",
+    add: "+ 添加文件夹", folders_hint: "不能选择整个磁盘或用户文件夹本身 — 请选择“文档”“下载”等子文件夹。",
+    perm: "权限", ask_read: "读取文件前询问",
+    ask_read_hint: "关闭后，机器人可不经询问读取所选文件夹中的文件。列出和搜索始终无需询问（仅文件名）。",
+    write_always: "写入或修改文件时总会征求许可。",
+    activity: "最近操作", activity_none: "暂无操作。",
+    unlink: "断开此电脑", unlink_confirm: "确定吗？请再点一次。",
+    remove: "移除",
+    st_online_live: "已连接 — 机器人请求即时到达",
+    st_online_poll: "已连接 — 请求可能延迟最多 30 秒",
+    st_offline: "无网络或服务器 — 将自动重新连接",
+    st_connecting: "正在连接…",
+    e_invalid_code: "代码错误。请检查网站上的代码。", e_expired_code: "代码已过期。请在网站上获取新代码。",
+    e_device_limit: "最多可连接 5 台电脑。请在网站上断开旧电脑。",
+    e_try_later: "尝试次数过多。请一分钟后再试。",
+    e_network: "无法连接服务器。请检查网络。",
+    e_already_added: "此文件夹已添加。", e_too_broad: "此文件夹范围太大 — 请选择子文件夹。",
+    e_not_a_directory: "这不是文件夹。", e_short: "代码必须为 8 个字符。", e_other: "失败：",
+    ver: "版本 "
+  }
+};
+const lang = new URLSearchParams(location.search).get("lang");
+const T = L[lang] || L.en;
+document.documentElement.lang = L[lang] ? lang : "en";
+
+const $ = (id) => document.getElementById(id);
+const inv = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args || {});
+const txt = (id, s) => { const e = $(id); if (e) e.textContent = s; };
+const show = (id, on) => $(id).classList.toggle("hidden", !on);
+const errText = (e) => T["e_" + e] || (T.e_other + String(e));
+
+// Sabit mətnlər
+for (const k of ["title","sub","disabled","revoked","pair_h","step1","step2","code","name","folders",
+                 "folders_none","folders_hint","perm","ask_read","ask_read_hint","write_always","activity"]) {
+  txt("t_" + k, T[k]);
+}
+txt("b_pair", T.pair); txt("b_add", T.add); txt("b_unlink", T.unlink);
+document.title = "KalBi Dost — " + T.title;
+
+let state = null;
+let nameTouched = false;
+
+// Kod sahəsi: böyük hərf, yalnız hərf/rəqəm, 4-dən sonra defis.
+$("code").addEventListener("input", (ev) => {
+  const raw = ev.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+  ev.target.value = raw.length > 4 ? raw.slice(0, 4) + "-" + raw.slice(4) : raw;
+  txt("pair_err", "");
+});
+$("dname").addEventListener("input", () => { nameTouched = true; });
+$("code").addEventListener("keydown", (ev) => { if (ev.key === "Enter") $("b_pair").click(); });
+
+$("b_pair").addEventListener("click", async () => {
+  const code = $("code").value.replace(/-/g, "");
+  if (code.length !== 8) { txt("pair_err", T.e_short); return; }
+  const b = $("b_pair");
+  b.disabled = true; b.textContent = T.pairing; txt("pair_err", "");
+  try {
+    await inv("bridge_pair", { code, name: $("dname").value });
+    $("code").value = "";
+    await refresh();
+  } catch (e) {
+    txt("pair_err", errText(e));
+  } finally {
+    b.disabled = false; b.textContent = T.pair;
+  }
+});
+
+$("b_add").addEventListener("click", async () => {
+  txt("folder_err", "");
+  try { await inv("bridge_add_folder"); await refresh(); }
+  catch (e) { txt("folder_err", errText(e)); }
+});
+
+$("ask_read").addEventListener("change", async (ev) => {
+  try { await inv("bridge_set_read_policy", { policy: ev.target.checked ? "ask" : "allow" }); }
+  catch (e) { ev.target.checked = !ev.target.checked; }
+});
+
+// "Ayır" iki addımlıdır (brauzer confirm() pəncərəsi əvəzinə — WebView-da
+// doğma dialoq tətbiqi bloklaya bilər).
+let unlinkArmed = null;
+$("b_unlink").addEventListener("click", async () => {
+  const b = $("b_unlink");
+  if (!unlinkArmed) {
+    b.textContent = T.unlink_confirm;
+    unlinkArmed = setTimeout(() => { unlinkArmed = null; b.textContent = T.unlink; }, 4000);
+    return;
+  }
+  clearTimeout(unlinkArmed); unlinkArmed = null;
+  b.disabled = true;
+  try { await inv("bridge_unlink"); } finally { b.disabled = false; b.textContent = T.unlink; await refresh(); }
+});
+
+function renderFolders(list) {
+  const ul = $("folders");
+  ul.replaceChildren();
+  show("t_folders_none", list.length === 0);
+  for (const f of list) {
+    const li = document.createElement("li");
+    const box = document.createElement("div"); box.className = "grow";
+    const n = document.createElement("div"); n.className = "fname"; n.textContent = f.name;
+    const p = document.createElement("div"); p.className = "fpath"; p.textContent = f.path; p.title = f.path;
+    box.append(n, p);
+    const x = document.createElement("button"); x.className = "x"; x.textContent = T.remove;
+    x.addEventListener("click", async () => { await inv("bridge_remove_folder", { name: f.name }); await refresh(); });
+    li.append(box, x);
+    ul.append(li);
+  }
+}
+
+function render(s) {
+  state = s;
+  if (s.version) txt("ver", T.ver + s.version);
+  if (!s.enabled) {
+    show("v_disabled", true); show("v_pair", false); show("v_main", false);
+    return;
+  }
+  show("v_disabled", false);
+  const st = s.status || { state: "unpaired" };
+  const paired = st.state !== "unpaired" && st.state !== "revoked";
+  show("v_pair", !paired); show("v_main", paired);
+  if (!paired) {
+    show("revoked_note", st.state === "revoked");
+    if (!nameTouched && !$("dname").value) $("dname").value = s.default_name || "";
+    return;
+  }
+  const dot = $("st_dot");
+  dot.className = "dot";
+  txt("st_name", s.device_name || "");
+  if (st.state === "online") {
+    dot.classList.add(st.live ? "ok" : "warn");
+    txt("st_text", st.live ? T.st_online_live : T.st_online_poll);
+  } else if (st.state === "offline") {
+    dot.classList.add("err"); txt("st_text", T.st_offline);
+  } else {
+    txt("st_text", T.st_connecting);
+  }
+  renderFolders(s.folders || []);
+  $("ask_read").checked = s.read_policy !== "allow";
+  $("act").textContent = (s.activity && s.activity.length) ? s.activity.join("\n") : T.activity_none;
+}
+
+async function refresh() {
+  try { render(await inv("bridge_state")); } catch (e) { /* pəncərə bağlanır */ }
+}
+
+// Status dəyişikliyi üçün yüngül sorğu: yalnız pəncərə görünəndə.
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 1500);
+</script>
+</body>
+</html>

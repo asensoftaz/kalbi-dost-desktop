@@ -77,6 +77,11 @@ function check() {
   if (!process.env.TAURI_UPDATER_PUBKEY) {
     fail("TAURI_UPDATER_PUBKEY dəyişəni yoxdur (Settings → Secrets and variables → Actions → Variables). README-yə baxın.");
   }
+  // Körpü dəyişənləri yoxdursa tətbiq yığılır, amma "Kompüter körpüsü"
+  // söndürülmüş olur — səssiz keçməsin deyə xəbərdarlıq.
+  if (!process.env.DOST_SUPABASE_URL || !process.env.DOST_SUPABASE_ANON_KEY) {
+    console.log("::warning::DOST_SUPABASE_URL / DOST_SUPABASE_ANON_KEY dəyişəni yoxdur (Settings → Secrets and variables → Actions → Variables) — körpü bu yığımda SÖNÜLÜ olacaq.");
+  }
   const msix = msixIdentity();
   if (!msix) {
     console.log("::warning::Store kimliyi yoxdur (msix/identity.json) — Store paketi (.msix) bu dəfə yığılmayacaq, yalnız .exe.");

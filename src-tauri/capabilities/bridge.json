@@ -1,0 +1,15 @@
+{
+  "identifier": "bridge-ui",
+  "description": "Körpü komandaları YALNIZ tətbiqin öz lokal pəncərələrinə: qoşma/qovluqlar (bridge) və təsdiq (approve-*). Əsas pəncərə (main, dost.kalbi.pro) burada qəsdən yoxdur — sayt fayllara çata və ya yazmanı özü təsdiqləyə bilməsin.",
+  "windows": ["bridge", "approve-*"],
+  "permissions": [
+    "allow-bridge-state",
+    "allow-bridge-pair",
+    "allow-bridge-unlink",
+    "allow-bridge-add-folder",
+    "allow-bridge-remove-folder",
+    "allow-bridge-set-read-policy",
+    "allow-approval-get",
+    "allow-approval-decide"
+  ]
+}

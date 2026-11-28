@@ -1,0 +1,181 @@
+<!doctype html>
+<!--
+  Təsdiq pəncərəsi: bot bir faylı yazmaq/oxumaq istəyir.
+  Qərar yalnız bu pəncərədən verilir (bridge_ui.rs → approval_decide pəncərənin
+  adını yoxlayır). Botdan gələn bütün mətnlər (yol, məzmun) textContent ilə —
+  HTML kimi işə düşə bilməz.
+  Təhlükəsizlik üçün: "Rədd et" standart fokusdadır (təsadüfi Enter/boşluq =
+  rədd), düymələr açılışdan 0.8 san sonra aktivləşir (yazarkən təsadüfi klik
+  olmasın), Esc = rədd. Vaxt bitəndə düymələr sönür, pəncərəni tətbiq bağlayır.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>KalBi Dost</title>
+<style>
+  :root { --bg:#14121a; --panel:#1d1a25; --raise:#26222f; --line:#332e3f; --tx:#ece9f3; --tx2:#9a93a8;
+          --acc:#7c5cff; --warn:#f2b84b; --err:#ef5a4f; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--tx);
+    font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; padding: 18px 20px 16px; }
+  .head { display: flex; gap: 12px; align-items: flex-start; }
+  .ico { width: 38px; height: 38px; border-radius: 10px; flex: none; display: grid; place-items: center;
+    background: rgba(124,92,255,.18); color: #b9a7ff; font-size: 20px; }
+  .ico.w { background: rgba(242,184,75,.16); color: var(--warn); }
+  h1 { font-size: 16px; margin: 0 0 2px; }
+  .muted { color: var(--tx2); } .small { font-size: 12px; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+  .lbl { color: var(--tx2); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
+  .path { font: 600 13px/1.4 Consolas, monospace; word-break: break-all; }
+  .full { font: 11px/1.4 Consolas, monospace; color: var(--tx2); word-break: break-all; margin-top: 3px; }
+  pre { margin: 0; max-height: 170px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    font: 12px/1.45 Consolas, monospace; color: #d6d1e2; }
+  .mode { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; margin-left: 6px; }
+  .mode.create { background: rgba(60,207,142,.15); color: #3ccf8e; }
+  .mode.overwrite { background: rgba(239,90,79,.15); color: var(--err); }
+  .mode.append { background: rgba(242,184,75,.15); color: var(--warn); }
+  .spacer { flex: 1; }
+  .bar { height: 3px; background: var(--raise); border-radius: 3px; overflow: hidden; margin: 14px 0 12px; }
+  .bar i { display: block; height: 100%; background: var(--acc); width: 100%; transition: width 1s linear; }
+  .btns { display: flex; gap: 10px; }
+  button { flex: 1; font: inherit; font-weight: 600; padding: 10px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--raise); color: var(--tx); }
+  button.allow { background: var(--acc); border-color: var(--acc); color: #fff; }
+  button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  button:disabled { opacity: .45; cursor: default; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <div id="ico" class="ico">📄</div>
+    <div>
+      <h1 id="h"></h1>
+      <div id="sub" class="muted small"></div>
+    </div>
+  </div>
+
+  <div class="box">
+    <div class="lbl" id="t_file"></div>
+    <div class="path" id="path"></div>
+    <div class="full" id="full"></div>
+  </div>
+
+  <div class="box hidden" id="prevbox">
+    <div class="lbl"><span id="t_content"></span><span id="mode" class="mode"></span> <span id="chars" class="muted"></span></div>
+    <pre id="preview"></pre>
+  </div>
+
+  <div class="spacer"></div>
+  <div id="left" class="muted small"></div>
+  <div class="bar"><i id="bar"></i></div>
+  <div class="btns">
+    <button id="deny" disabled></button>
+    <button id="allow" class="allow" disabled></button>
+  </div>
+
+<script>
+"use strict";
+const L = {
+  az: { write: "{bot} faylı yazmaq istəyir", read: "{bot} faylı oxumaq istəyir",
+        sub_write: "İcazə versəniz, bot bu faylı kompüterinizdə yaradacaq və ya dəyişəcək.",
+        sub_read: "İcazə versəniz, faylın mətni bota göndəriləcək.",
+        file: "Fayl", content: "Yazılacaq mətn", chars: "{n} simvol", more: "… (davamı var)",
+        create: "yeni fayl", overwrite: "üzərinə yazılır — köhnə məzmun silinir", append: "sonuna əlavə",
+        allow: "İcazə ver", deny: "Rədd et", left: "{s} saniyə qalıb", expired: "Vaxt bitdi — bot artıq gözləmir." },
+  tr: { write: "{bot} bir dosya yazmak istiyor", read: "{bot} bir dosyayı okumak istiyor",
+        sub_write: "İzin verirseniz bot bu dosyayı bilgisayarınızda oluşturacak veya değiştirecek.",
+        sub_read: "İzin verirseniz dosyanın metni bota gönderilecek.",
+        file: "Dosya", content: "Yazılacak metin", chars: "{n} karakter", more: "… (devamı var)",
+        create: "yeni dosya", overwrite: "üzerine yazılır — eski içerik silinir", append: "sonuna ekleme",
+        allow: "İzin ver", deny: "Reddet", left: "{s} saniye kaldı", expired: "Süre doldu — bot artık beklemiyor." },
+  ru: { write: "{bot} хочет записать файл", read: "{bot} хочет прочитать файл",
+        sub_write: "Если разрешить, бот создаст или изменит этот файл на вашем компьютере.",
+        sub_read: "Если разрешить, текст файла будет отправлен боту.",
+        file: "Файл", content: "Текст для записи", chars: "{n} симв.", more: "… (продолжение)",
+        create: "новый файл", overwrite: "перезапись — старое содержимое удалится", append: "дописать в конец",
+        allow: "Разрешить", deny: "Отклонить", left: "Осталось {s} с", expired: "Время вышло — бот больше не ждёт." },
+  en: { write: "{bot} wants to write a file", read: "{bot} wants to read a file",
+        sub_write: "If you allow it, the bot will create or change this file on your computer.",
+        sub_read: "If you allow it, the file’s text will be sent to the bot.",
+        file: "File", content: "Text to write", chars: "{n} characters", more: "… (continues)",
+        create: "new file", overwrite: "overwrite — old content will be lost", append: "append to end",
+        allow: "Allow", deny: "Deny", left: "{s} seconds left", expired: "Time is up — the bot is no longer waiting." },
+  zh: { write: "{bot} 想要写入文件", read: "{bot} 想要读取文件",
+        sub_write: "如果允许，机器人将在您的电脑上创建或修改此文件。",
+        sub_read: "如果允许，文件内容将发送给机器人。",
+        file: "文件", content: "要写入的内容", chars: "{n} 个字符", more: "…（未完）",
+        create: "新文件", overwrite: "覆盖 — 旧内容将丢失", append: "追加到末尾",
+        allow: "允许", deny: "拒绝", left: "剩余 {s} 秒", expired: "时间已到 — 机器人不再等待。" }
+};
+const lang = new URLSearchParams(location.search).get("lang");
+const T = L[lang] || L.en;
+document.documentElement.lang = L[lang] ? lang : "en";
+const $ = (id) => document.getElementById(id);
+const inv = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args || {});
+const fmt = (s, o) => s.replace(/\{(\w+)\}/g, (_, k) => String(o[k]));
+
+$("deny").textContent = T.deny;
+$("allow").textContent = T.allow;
+$("t_file").textContent = T.file;
+$("t_content").textContent = T.content;
+
+let decided = false;
+async function decide(allow) {
+  if (decided) return;
+  decided = true;
+  $("deny").disabled = true; $("allow").disabled = true;
+  try { await inv("approval_decide", { allow }); } catch (e) { /* pəncərə bağlanır */ }
+}
+$("deny").addEventListener("click", () => decide(false));
+$("allow").addEventListener("click", () => decide(true));
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") decide(false); });
+
+(async () => {
+  let r;
+  try { r = await inv("approval_get"); } catch (e) { return; }
+  const isWrite = r.op === "write";
+  $("h").textContent = fmt(isWrite ? T.write : T.read, { bot: r.bot_name });
+  $("sub").textContent = isWrite ? T.sub_write : T.sub_read;
+  $("ico").textContent = isWrite ? "✎" : "📄";
+  if (isWrite) $("ico").classList.add("w");
+  $("path").textContent = r.path;
+  $("full").textContent = r.full_path;
+  if (isWrite) {
+    $("prevbox").classList.remove("hidden");
+    const m = r.mode || "create";
+    $("mode").textContent = T[m] || m;
+    $("mode").classList.add(m);
+    $("chars").textContent = fmt(T.chars, { n: r.content_chars || 0 });
+    const more = (r.content_chars || 0) > (r.preview || "").length;
+    $("preview").textContent = (r.preview || "") + (more ? "\n" + T.more : "");
+  }
+
+  // "Rədd et" fokusda: təsadüfi Enter/boşluq icazə vermir.
+  setTimeout(() => {
+    if (decided) return;
+    $("deny").disabled = false; $("allow").disabled = false;
+    $("deny").focus();
+  }, 800);
+
+  const total = Math.max(1000, r.expires_in_ms || 0);
+  const end = Date.now() + total;
+  const tick = () => {
+    const ms = end - Date.now();
+    if (ms <= 0) {
+      decided = true;
+      $("deny").disabled = true; $("allow").disabled = true;
+      $("left").textContent = T.expired;
+      $("bar").style.width = "0%";
+      return;
+    }
+    $("left").textContent = fmt(T.left, { s: Math.ceil(ms / 1000) });
+    $("bar").style.width = (100 * ms / total) + "%";
+    setTimeout(tick, 250);
+  };
+  tick();
+})();
+</script>
+</body>
+</html>

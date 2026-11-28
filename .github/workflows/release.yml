@@ -46,6 +46,10 @@ jobs:
       MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
       MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
       MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+      # Körpü (bridge.rs): yığım vaxtı .exe-yə yazılır (option_env!). Yalnız
+      # anon/publishable açar — service_role HEÇ VAXT. Boşdursa körpü sönülü olur.
+      DOST_SUPABASE_URL: ${{ vars.DOST_SUPABASE_URL }}
+      DOST_SUPABASE_ANON_KEY: ${{ vars.DOST_SUPABASE_ANON_KEY }}
       PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && 'true' || 'false' }}
     defaults:
       run:

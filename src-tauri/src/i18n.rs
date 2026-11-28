@@ -19,6 +19,17 @@ pub struct Texts {
     pub up_to_date: &'static str,
     pub update_failed: &'static str,
     pub ok: &'static str,
+    // --- Körpü (2-ci mərhələ) ---
+    /// Tray menyusu: qoşma/qovluqlar pəncərəsi.
+    pub tray_bridge: &'static str,
+    pub bridge_title: &'static str,
+    /// Təsdiq pəncərəsinin başlığı ("<bot> — icazə istəyir").
+    pub approve_title: &'static str,
+    pub pick_folder: &'static str,
+    /// Tray ipucunda körpünün vəziyyəti.
+    pub st_online: &'static str,
+    pub st_offline: &'static str,
+    pub st_revoked: &'static str,
 }
 
 const AZ: Texts = Texts {
@@ -33,6 +44,13 @@ const AZ: Texts = Texts {
     up_to_date: "Ən son versiya quraşdırılıb.",
     update_failed: "Yeniləməni yoxlamaq alınmadı. İnternet bağlantısını yoxlayıb sonra yenidən cəhd edin.",
     ok: "Oldu",
+    tray_bridge: "Kompüter körpüsü…",
+    bridge_title: "KalBi Dost — kompüter körpüsü",
+    approve_title: "icazə istəyir",
+    pick_folder: "Bot üçün qovluq seçin",
+    st_online: "kompüter qoşulub",
+    st_offline: "kompüter oflayndır",
+    st_revoked: "kompüter ayrılıb",
 };
 
 const TR: Texts = Texts {
@@ -47,6 +65,13 @@ const TR: Texts = Texts {
     up_to_date: "En son sürüm yüklü.",
     update_failed: "Güncelleme denetlenemedi. İnternet bağlantınızı kontrol edip daha sonra tekrar deneyin.",
     ok: "Tamam",
+    tray_bridge: "Bilgisayar köprüsü…",
+    bridge_title: "KalBi Dost — bilgisayar köprüsü",
+    approve_title: "izin istiyor",
+    pick_folder: "Bot için klasör seçin",
+    st_online: "bilgisayar bağlı",
+    st_offline: "bilgisayar çevrimdışı",
+    st_revoked: "bilgisayar ayrıldı",
 };
 
 const RU: Texts = Texts {
@@ -61,6 +86,13 @@ const RU: Texts = Texts {
     up_to_date: "Установлена последняя версия.",
     update_failed: "Не удалось проверить обновления. Проверьте подключение к интернету и повторите попытку позже.",
     ok: "ОК",
+    tray_bridge: "Мост с компьютером…",
+    bridge_title: "KalBi Dost — мост с компьютером",
+    approve_title: "запрашивает разрешение",
+    pick_folder: "Выберите папку для бота",
+    st_online: "компьютер подключён",
+    st_offline: "компьютер не в сети",
+    st_revoked: "компьютер отключён",
 };
 
 const EN: Texts = Texts {
@@ -75,6 +107,13 @@ const EN: Texts = Texts {
     up_to_date: "You have the latest version.",
     update_failed: "Could not check for updates. Check your internet connection and try again later.",
     ok: "OK",
+    tray_bridge: "Computer bridge…",
+    bridge_title: "KalBi Dost — computer bridge",
+    approve_title: "asks for permission",
+    pick_folder: "Choose a folder for the bot",
+    st_online: "computer connected",
+    st_offline: "computer offline",
+    st_revoked: "computer unlinked",
 };
 
 const ZH: Texts = Texts {
@@ -89,19 +128,37 @@ const ZH: Texts = Texts {
     up_to_date: "已是最新版本。",
     update_failed: "无法检查更新。请检查网络连接后稍后重试。",
     ok: "确定",
+    tray_bridge: "电脑桥接…",
+    bridge_title: "KalBi Dost — 电脑桥接",
+    approve_title: "请求权限",
+    pick_folder: "为机器人选择文件夹",
+    st_online: "电脑已连接",
+    st_offline: "电脑离线",
+    st_revoked: "电脑已断开",
 };
 
 /// Sistem dilinə görə mətnlər. Windows "az-Latn-AZ", "tr-TR", "zh-Hans-CN"
 /// kimi teq qaytarır — yalnız ilk hissəyə (dil koduna) baxırıq.
 /// Tanınmayan dil → ingiliscə (beynəlxalq istifadəçi üçün ən anlaşıqlısı).
 pub fn texts() -> &'static Texts {
-    let locale = sys_locale::get_locale().unwrap_or_default().to_lowercase();
-    let lang = locale.split(['-', '_']).next().unwrap_or("");
-    match lang {
+    match lang_code() {
         "az" => &AZ,
         "tr" => &TR,
         "ru" => &RU,
         "zh" => &ZH,
         _ => &EN,
+    }
+}
+
+/// Dil kodu — lokal HTML səhifələri (körpü, təsdiq) eyni dili seçsin deyə
+/// `?lang=` ilə ötürülür. Mətnlər səhifənin özündədir.
+pub fn lang_code() -> &'static str {
+    let locale = sys_locale::get_locale().unwrap_or_default().to_lowercase();
+    match locale.split(['-', '_']).next().unwrap_or("") {
+        "az" => "az",
+        "tr" => "tr",
+        "ru" => "ru",
+        "zh" => "zh",
+        _ => "en",
     }
 }
