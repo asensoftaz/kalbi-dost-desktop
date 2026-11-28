@@ -41,6 +41,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Körpü: uzun iş bitəndə bildiriş (notify əməliyyatı).
+        .plugin(tauri_plugin_notification::init())
         // Körpünün lokal səhifələri (qoşma, təsdiq) — .exe-nin içindən.
         .register_uri_scheme_protocol(bridge_ui::SCHEME, bridge_ui::serve)
         .invoke_handler(tauri::generate_handler![
@@ -50,6 +52,7 @@ pub fn run() {
             bridge_ui::bridge_add_folder,
             bridge_ui::bridge_remove_folder,
             bridge_ui::bridge_set_read_policy,
+            bridge_ui::bridge_set_trust,
             bridge_ui::approval_get,
             bridge_ui::approval_decide,
         ]);

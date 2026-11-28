@@ -17,6 +17,7 @@ fn main() {
             "bridge_add_folder",
             "bridge_remove_folder",
             "bridge_set_read_policy",
+            "bridge_set_trust",
             "approval_get",
             "approval_decide",
         ])),

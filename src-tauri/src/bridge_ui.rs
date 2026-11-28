@@ -25,6 +25,7 @@ use tauri::http::{header, Response, StatusCode};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Manager, Runtime, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::oneshot;
 
 use crate::bridge::{
@@ -120,6 +121,28 @@ impl Host for DesktopHost {
         let mut a = self.activity.lock().unwrap();
         a.push_front(format!("{stamp}  {line}"));
         a.truncate(ACTIVITY_MAX);
+    }
+
+    /// Fayl → öz proqramında (Windows "aç" kimi), link → standart brauzer.
+    /// Yol bridge.rs-də seçilmiş qovluğun içində olduğu yoxlanıb; link yalnız http(s).
+    fn open(&self, target: &str, is_url: bool) -> Result<(), String> {
+        let r = if is_url {
+            tauri_plugin_opener::open_url(target, None::<&str>)
+        } else {
+            tauri_plugin_opener::open_path(target, None::<&str>)
+        };
+        r.map_err(|e| e.to_string())
+    }
+
+    fn notify(&self, title: &str, body: &str) -> Result<(), String> {
+        let title = if title.trim().is_empty() { "KalBi Dost" } else { title };
+        self.app
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .show()
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -255,7 +278,7 @@ fn open_approve_window(app: &AppHandle, label: &str, req: &ApprovalRequest) -> t
     let title = format!("{} — {}", req.bot_name, t.approve_title);
     let w = WebviewWindowBuilder::new(app, label, WebviewUrl::CustomProtocol(ui_url("approve.html")))
         .title(title)
-        .inner_size(500.0, if req.op == "write" { 560.0 } else { 400.0 })
+        .inner_size(520.0, if req.preview.is_some() || req.items.len() > 1 { 600.0 } else { 420.0 })
         .resizable(false)
         .minimizable(false)
         .maximizable(false)
@@ -314,6 +337,7 @@ pub fn bridge_state(window: WebviewWindow, ui: tauri::State<'_, BridgeUi>) -> Re
         "default_name": default_device_name(),
         "folders": folders,
         "read_policy": b.read_policy(),
+        "trust": b.trust(),
         "activity": activity,
         "version": window.app_handle().package_info().version.to_string(),
     }))
@@ -388,6 +412,16 @@ pub fn bridge_set_read_policy(
 ) -> Result<(), String> {
     require_bridge(&window)?;
     get_bridge(&ui)?.set_read_policy(policy).map_err(|e| e.to_string())
+}
+
+/// "Soruşmadan işlə" — yalnız bu sessiya üçün (tətbiq bağlananda sönür).
+#[tauri::command]
+pub fn bridge_set_trust(window: WebviewWindow, ui: tauri::State<'_, BridgeUi>, on: bool) -> Result<(), String> {
+    require_bridge(&window)?;
+    let b = get_bridge(&ui)?;
+    b.set_trust(on);
+    ui.host.activity(if on { "⚡ soruşmadan işlə: AÇIQ".into() } else { "soruşmadan işlə: bağlı".into() });
+    Ok(())
 }
 
 /// Təsdiq pəncərəsi öz işini soruşur — yalnız öz adına bağlı olanı alır.

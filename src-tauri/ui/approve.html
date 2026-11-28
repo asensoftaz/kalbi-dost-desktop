@@ -45,6 +45,12 @@
   button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
   button:disabled { opacity: .45; cursor: default; }
   .hidden { display: none !important; }
+  ul.items { margin: 0; padding: 0; list-style: none; max-height: 210px; overflow: auto;
+    font: 12px/1.6 Consolas, monospace; color: #d6d1e2; }
+  ul.items li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .danger { background: rgba(239,90,79,.14); border: 1px solid rgba(239,90,79,.5); color: #ffb3ad;
+    border-radius: 10px; padding: 9px 12px; margin-top: 12px; font-weight: 600; }
+  .ico.d { background: rgba(239,90,79,.18); color: var(--err); }
 </style>
 </head>
 <body>
@@ -62,6 +68,13 @@
     <div class="full" id="full"></div>
   </div>
 
+  <div class="danger hidden" id="danger"></div>
+
+  <div class="box hidden" id="itembox">
+    <div class="lbl" id="t_items"></div>
+    <ul class="items" id="items"></ul>
+  </div>
+
   <div class="box hidden" id="prevbox">
     <div class="lbl"><span id="t_content"></span><span id="mode" class="mode"></span> <span id="chars" class="muted"></span></div>
     <pre id="preview"></pre>
@@ -77,36 +90,102 @@
 
 <script>
 "use strict";
+// Hər əməliyyat üçün başlıq (t_*) və izah (s_*). {bot} — botun adı, {n} — say.
 const L = {
-  az: { write: "{bot} faylı yazmaq istəyir", read: "{bot} faylı oxumaq istəyir",
-        sub_write: "İcazə versəniz, bot bu faylı kompüterinizdə yaradacaq və ya dəyişəcək.",
-        sub_read: "İcazə versəniz, faylın mətni bota göndəriləcək.",
-        file: "Fayl", content: "Yazılacaq mətn", chars: "{n} simvol", more: "… (davamı var)",
+  az: { t_read: "{bot} faylı oxumaq istəyir", s_read: "İcazə versəniz, faylın mətni bota göndəriləcək.",
+        t_write: "{bot} faylı yazmaq istəyir", s_write: "İcazə versəniz, bot bu faylı kompüterinizdə yaradacaq və ya dəyişəcək.",
+        t_move: "{bot} {n} elementi köçürmək istəyir", s_move: "Lazım olan qovluqlar avtomatik yaradılacaq.",
+        t_copy: "{bot} {n} elementi kopyalamaq istəyir", s_copy: "Mənbə fayllar yerində qalacaq.",
+        t_delete: "{bot} {n} elementi silmək istəyir", s_delete: "Fayllar Zibil qutusuna gedir — lazım olsa geri qaytara bilərsiniz.",
+        t_mkdir: "{bot} qovluq yaratmaq istəyir", s_mkdir: "",
+        t_open: "{bot} faylı açmaq istəyir", s_open: "Fayl öz proqramında açılacaq.",
+        t_open_url: "{bot} linki açmaq istəyir", s_open_url: "Link standart brauzerinizdə açılacaq.",
+        t_open_danger: "{bot} PROQRAM İŞƏ SALMAQ istəyir", s_open_danger: "",
+        danger: "Diqqət: bu fayl proqramdır və işə düşəcək. Mənbəyini tanımırsınızsa, «Rədd et» basın.",
+        t_zip: "{bot} arxiv yaratmaq istəyir", s_zip: "{n} element bir ZIP faylına yığılacaq.",
+        t_unzip: "{bot} arxivi açmaq istəyir", s_unzip: "Proqram faylları (.exe, .bat …) açılmayacaq.",
+        t_clipboard_get: "{bot} mübadilə buferini oxumaq istəyir", s_clipboard_get: "Buferdə parol və ya şəxsi mətn ola bilər.",
+        t_clipboard_set: "{bot} buferə mətn qoymaq istəyir", s_clipboard_set: "Sonra Ctrl+V ilə istənilən yerə yapışdıra bilərsiniz.",
+        t_trash_restore: "{bot} Zibil qutusundan {n} element qaytarmaq istəyir", s_trash_restore: "Fayllar əvvəlki yerinə qayıdacaq.",
+        file: "Fayl", target: "Hədəf", items: "Elementlər", content: "Mətn", chars: "{n} simvol", more: "… (davamı var)", more_items: "… və daha {n}",
         create: "yeni fayl", overwrite: "üzərinə yazılır — köhnə məzmun silinir", append: "sonuna əlavə",
+        ow_warn: "Eyni adlı fayllar əvəz olunacaq (köhnələri Zibil qutusuna gedir).",
         allow: "İcazə ver", deny: "Rədd et", left: "{s} saniyə qalıb", expired: "Vaxt bitdi — bot artıq gözləmir." },
-  tr: { write: "{bot} bir dosya yazmak istiyor", read: "{bot} bir dosyayı okumak istiyor",
-        sub_write: "İzin verirseniz bot bu dosyayı bilgisayarınızda oluşturacak veya değiştirecek.",
-        sub_read: "İzin verirseniz dosyanın metni bota gönderilecek.",
-        file: "Dosya", content: "Yazılacak metin", chars: "{n} karakter", more: "… (devamı var)",
+  tr: { t_read: "{bot} bir dosyayı okumak istiyor", s_read: "İzin verirseniz dosyanın metni bota gönderilecek.",
+        t_write: "{bot} bir dosya yazmak istiyor", s_write: "İzin verirseniz bot bu dosyayı bilgisayarınızda oluşturacak veya değiştirecek.",
+        t_move: "{bot} {n} öğeyi taşımak istiyor", s_move: "Gerekli klasörler otomatik oluşturulacak.",
+        t_copy: "{bot} {n} öğeyi kopyalamak istiyor", s_copy: "Kaynak dosyalar yerinde kalacak.",
+        t_delete: "{bot} {n} öğeyi silmek istiyor", s_delete: "Dosyalar Geri Dönüşüm Kutusu’na gider — gerekirse geri alabilirsiniz.",
+        t_mkdir: "{bot} klasör oluşturmak istiyor", s_mkdir: "",
+        t_open: "{bot} bir dosyayı açmak istiyor", s_open: "Dosya kendi programında açılacak.",
+        t_open_url: "{bot} bir bağlantıyı açmak istiyor", s_open_url: "Bağlantı varsayılan tarayıcınızda açılacak.",
+        t_open_danger: "{bot} PROGRAM ÇALIŞTIRMAK istiyor", s_open_danger: "",
+        danger: "Dikkat: bu dosya bir programdır ve çalışacaktır. Kaynağını tanımıyorsanız «Reddet»e basın.",
+        t_zip: "{bot} arşiv oluşturmak istiyor", s_zip: "{n} öğe bir ZIP dosyasına toplanacak.",
+        t_unzip: "{bot} arşivi açmak istiyor", s_unzip: "Program dosyaları (.exe, .bat …) çıkarılmayacak.",
+        t_clipboard_get: "{bot} panoyu okumak istiyor", s_clipboard_get: "Panoda şifre veya kişisel metin olabilir.",
+        t_clipboard_set: "{bot} panoya metin koymak istiyor", s_clipboard_set: "Sonra Ctrl+V ile istediğiniz yere yapıştırabilirsiniz.",
+        t_trash_restore: "{bot} Geri Dönüşüm Kutusu’ndan {n} öğe geri almak istiyor", s_trash_restore: "Dosyalar eski yerlerine dönecek.",
+        file: "Dosya", target: "Hedef", items: "Öğeler", content: "Metin", chars: "{n} karakter", more: "… (devamı var)", more_items: "… ve {n} tane daha",
         create: "yeni dosya", overwrite: "üzerine yazılır — eski içerik silinir", append: "sonuna ekleme",
+        ow_warn: "Aynı adlı dosyalar değiştirilecek (eskileri Geri Dönüşüm Kutusu’na gider).",
         allow: "İzin ver", deny: "Reddet", left: "{s} saniye kaldı", expired: "Süre doldu — bot artık beklemiyor." },
-  ru: { write: "{bot} хочет записать файл", read: "{bot} хочет прочитать файл",
-        sub_write: "Если разрешить, бот создаст или изменит этот файл на вашем компьютере.",
-        sub_read: "Если разрешить, текст файла будет отправлен боту.",
-        file: "Файл", content: "Текст для записи", chars: "{n} симв.", more: "… (продолжение)",
+  ru: { t_read: "{bot} хочет прочитать файл", s_read: "Если разрешить, текст файла будет отправлен боту.",
+        t_write: "{bot} хочет записать файл", s_write: "Если разрешить, бот создаст или изменит этот файл на вашем компьютере.",
+        t_move: "{bot} хочет переместить элементы: {n}", s_move: "Нужные папки будут созданы автоматически.",
+        t_copy: "{bot} хочет скопировать элементы: {n}", s_copy: "Исходные файлы останутся на месте.",
+        t_delete: "{bot} хочет удалить элементы: {n}", s_delete: "Файлы попадут в Корзину — при необходимости их можно вернуть.",
+        t_mkdir: "{bot} хочет создать папку", s_mkdir: "",
+        t_open: "{bot} хочет открыть файл", s_open: "Файл откроется в своей программе.",
+        t_open_url: "{bot} хочет открыть ссылку", s_open_url: "Ссылка откроется в браузере по умолчанию.",
+        t_open_danger: "{bot} хочет ЗАПУСТИТЬ ПРОГРАММУ", s_open_danger: "",
+        danger: "Внимание: это программа, и она будет запущена. Если не знаете её источник, нажмите «Отклонить».",
+        t_zip: "{bot} хочет создать архив", s_zip: "Элементы ({n}) будут собраны в ZIP-файл.",
+        t_unzip: "{bot} хочет распаковать архив", s_unzip: "Программы (.exe, .bat …) извлекаться не будут.",
+        t_clipboard_get: "{bot} хочет прочитать буфер обмена", s_clipboard_get: "В буфере могут быть пароли или личный текст.",
+        t_clipboard_set: "{bot} хочет поместить текст в буфер", s_clipboard_set: "Потом его можно вставить через Ctrl+V.",
+        t_trash_restore: "{bot} хочет восстановить из Корзины: {n}", s_trash_restore: "Файлы вернутся на прежнее место.",
+        file: "Файл", target: "Куда", items: "Элементы", content: "Текст", chars: "{n} симв.", more: "… (продолжение)", more_items: "… и ещё {n}",
         create: "новый файл", overwrite: "перезапись — старое содержимое удалится", append: "дописать в конец",
+        ow_warn: "Файлы с тем же именем будут заменены (старые попадут в Корзину).",
         allow: "Разрешить", deny: "Отклонить", left: "Осталось {s} с", expired: "Время вышло — бот больше не ждёт." },
-  en: { write: "{bot} wants to write a file", read: "{bot} wants to read a file",
-        sub_write: "If you allow it, the bot will create or change this file on your computer.",
-        sub_read: "If you allow it, the file’s text will be sent to the bot.",
-        file: "File", content: "Text to write", chars: "{n} characters", more: "… (continues)",
+  en: { t_read: "{bot} wants to read a file", s_read: "If you allow it, the file’s text will be sent to the bot.",
+        t_write: "{bot} wants to write a file", s_write: "If you allow it, the bot will create or change this file on your computer.",
+        t_move: "{bot} wants to move {n} item(s)", s_move: "Missing folders will be created automatically.",
+        t_copy: "{bot} wants to copy {n} item(s)", s_copy: "The originals stay where they are.",
+        t_delete: "{bot} wants to delete {n} item(s)", s_delete: "Files go to the Recycle Bin — you can restore them if needed.",
+        t_mkdir: "{bot} wants to create a folder", s_mkdir: "",
+        t_open: "{bot} wants to open a file", s_open: "The file will open in its own app.",
+        t_open_url: "{bot} wants to open a link", s_open_url: "The link will open in your default browser.",
+        t_open_danger: "{bot} wants to RUN A PROGRAM", s_open_danger: "",
+        danger: "Warning: this file is a program and will run. If you don’t know where it came from, click “Deny”.",
+        t_zip: "{bot} wants to create an archive", s_zip: "{n} item(s) will be packed into a ZIP file.",
+        t_unzip: "{bot} wants to extract an archive", s_unzip: "Program files (.exe, .bat …) will not be extracted.",
+        t_clipboard_get: "{bot} wants to read your clipboard", s_clipboard_get: "Your clipboard may contain passwords or private text.",
+        t_clipboard_set: "{bot} wants to put text on your clipboard", s_clipboard_set: "You can then paste it anywhere with Ctrl+V.",
+        t_trash_restore: "{bot} wants to restore {n} item(s) from the Recycle Bin", s_trash_restore: "Files will return to where they were.",
+        file: "File", target: "Target", items: "Items", content: "Text", chars: "{n} characters", more: "… (continues)", more_items: "… and {n} more",
         create: "new file", overwrite: "overwrite — old content will be lost", append: "append to end",
+        ow_warn: "Files with the same name will be replaced (old ones go to the Recycle Bin).",
         allow: "Allow", deny: "Deny", left: "{s} seconds left", expired: "Time is up — the bot is no longer waiting." },
-  zh: { write: "{bot} 想要写入文件", read: "{bot} 想要读取文件",
-        sub_write: "如果允许，机器人将在您的电脑上创建或修改此文件。",
-        sub_read: "如果允许，文件内容将发送给机器人。",
-        file: "文件", content: "要写入的内容", chars: "{n} 个字符", more: "…（未完）",
+  zh: { t_read: "{bot} 想要读取文件", s_read: "如果允许，文件内容将发送给机器人。",
+        t_write: "{bot} 想要写入文件", s_write: "如果允许，机器人将在您的电脑上创建或修改此文件。",
+        t_move: "{bot} 想要移动 {n} 个项目", s_move: "缺少的文件夹将自动创建。",
+        t_copy: "{bot} 想要复制 {n} 个项目", s_copy: "原文件保留在原处。",
+        t_delete: "{bot} 想要删除 {n} 个项目", s_delete: "文件将移到回收站 — 需要时可以恢复。",
+        t_mkdir: "{bot} 想要创建文件夹", s_mkdir: "",
+        t_open: "{bot} 想要打开文件", s_open: "文件将在其默认程序中打开。",
+        t_open_url: "{bot} 想要打开链接", s_open_url: "链接将在默认浏览器中打开。",
+        t_open_danger: "{bot} 想要运行程序", s_open_danger: "",
+        danger: "注意：此文件是程序，将会运行。如果您不了解其来源，请点击“拒绝”。",
+        t_zip: "{bot} 想要创建压缩包", s_zip: "{n} 个项目将打包成 ZIP 文件。",
+        t_unzip: "{bot} 想要解压压缩包", s_unzip: "程序文件（.exe、.bat …）不会被解压。",
+        t_clipboard_get: "{bot} 想要读取剪贴板", s_clipboard_get: "剪贴板中可能有密码或私人文本。",
+        t_clipboard_set: "{bot} 想要把文本放到剪贴板", s_clipboard_set: "之后可用 Ctrl+V 粘贴到任何地方。",
+        t_trash_restore: "{bot} 想要从回收站恢复 {n} 个项目", s_trash_restore: "文件将回到原来的位置。",
+        file: "文件", target: "目标", items: "项目", content: "文本", chars: "{n} 个字符", more: "…（未完）", more_items: "… 还有 {n} 个",
         create: "新文件", overwrite: "覆盖 — 旧内容将丢失", append: "追加到末尾",
+        ow_warn: "同名文件将被替换（旧文件移到回收站）。",
         allow: "允许", deny: "拒绝", left: "剩余 {s} 秒", expired: "时间已到 — 机器人不再等待。" }
 };
 const lang = new URLSearchParams(location.search).get("lang");
@@ -135,18 +214,41 @@ document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") decide(f
 (async () => {
   let r;
   try { r = await inv("approval_get"); } catch (e) { return; }
-  const isWrite = r.op === "write";
-  $("h").textContent = fmt(isWrite ? T.write : T.read, { bot: r.bot_name });
-  $("sub").textContent = isWrite ? T.sub_write : T.sub_read;
-  $("ico").textContent = isWrite ? "✎" : "📄";
-  if (isWrite) $("ico").classList.add("w");
-  $("path").textContent = r.path;
-  $("full").textContent = r.full_path;
-  if (isWrite) {
+  const isUrl = r.op === "open" && /^https?:\/\//.test(r.path || "");
+  const key = r.danger ? "open_danger" : (isUrl ? "open_url" : r.op);
+  const vars = { bot: r.bot_name, n: r.count || 1 };
+  $("h").textContent = fmt(T["t_" + key] || r.op, vars);
+  $("sub").textContent = fmt(T["s_" + key] || "", vars);
+  const icons = { read: "📄", write: "✎", move: "↪", copy: "⧉", delete: "🗑", mkdir: "📁", open: "↗",
+                  zip: "🗜", unzip: "🗜", clipboard_get: "📋", clipboard_set: "📋", trash_restore: "♻" };
+  $("ico").textContent = icons[r.op] || "•";
+  if (r.danger) { $("ico").classList.add("d"); $("danger").textContent = T.danger; $("danger").classList.remove("hidden"); }
+  else if (["write", "move", "delete", "unzip"].includes(r.op)) $("ico").classList.add("w");
+
+  // Tək yol (fayl/hədəf) — çoxlu elementdə siyahı göstərilir.
+  const multi = (r.items || []).length > 0 && !(r.op === "unzip");
+  if (r.path || r.full_path) {
+    $("t_file").textContent = (r.op === "zip" || r.op === "unzip") ? T.target : T.file;
+    $("path").textContent = r.op === "zip" ? "" : (r.path || "");
+    $("full").textContent = r.full_path || "";
+  }
+  if (!r.path && !r.full_path || (multi && r.op !== "zip")) $("t_file").parentElement.classList.add("hidden");
+  if ((r.items || []).length) {
+    $("itembox").classList.remove("hidden");
+    $("t_items").textContent = T.items + " (" + (r.count || r.items.length) + ")";
+    const ul = $("items");
+    for (const it of r.items) { const li = document.createElement("li"); li.textContent = it; li.title = it; ul.append(li); }
+    const rest = (r.count || 0) - r.items.length;
+    if (rest > 0) { const li = document.createElement("li"); li.textContent = fmt(T.more_items, { n: rest }); ul.append(li); }
+  }
+  if (r.overwrite) { $("danger").textContent = T.ow_warn; $("danger").classList.remove("hidden"); }
+  if (r.preview != null) {
     $("prevbox").classList.remove("hidden");
-    const m = r.mode || "create";
-    $("mode").textContent = T[m] || m;
-    $("mode").classList.add(m);
+    if (r.op === "write") {
+      const m = r.mode || "create";
+      $("mode").textContent = T[m] || m;
+      $("mode").classList.add(m);
+    }
     $("chars").textContent = fmt(T.chars, { n: r.content_chars || 0 });
     const more = (r.content_chars || 0) > (r.preview || "").length;
     $("preview").textContent = (r.preview || "") + (more ? "\n" + T.more : "");

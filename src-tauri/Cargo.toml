@@ -1,6 +1,6 @@
 [package]
 name = "kalbi-dost"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [lib]
@@ -16,6 +16,8 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# Körpü: işi bitirəndə Windows bildirişi (notify əməliyyatı).
+tauri-plugin-notification = "2"
 sys-locale = "0.3"
 # generate_context! makrosu yaranan kodda serde_json-a müraciət edir.
 # Körpü (bridge.rs) də RPC gövdələri və iş nəticələri üçün işlədir.
@@ -39,6 +41,18 @@ rustls-platform-verifier = "0.7"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 # expires_at (serverin vaxtı) və HTTP Date başlığı ilə saat fərqi.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Silmə = Windows Zibil qutusu (IFileOperation). Həmişəlik silmə qəsdən yoxdur.
+trash = "5"
+# Sənəd mətni: docx/pptx (ZIP içində XML) və ZIP əməliyyatları.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# Excel/ODS → mətn cədvəl (TSV).
+calamine = { version = "0.38", default-features = false }
+# PDF → mətn (skan edilmiş PDF-də mətn olmur).
+pdf-extract = "0.12"
+# Mübadilə buferi (yalnız mətn — şəkil dəstəyi lazım deyil, ölçü kiçik qalsın).
+arboard = { version = "3", default-features = false }
+# Disklərdə boş yer, RAM, Windows versiyası (proseslər/istifadəçilər yox).
+sysinfo = { version = "0.40", default-features = false, features = ["system", "disk"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -17,10 +17,14 @@
 //!   2. Yol yalnız seçilmiş qovluqların içində açılır: `..`, disk hərfi,
 //!      `\`, `:` (NTFS axınları), Windows cihaz adları rədd; simvolik link /
 //!      junction ilə qaçış `canonicalize` ilə tutulur.
-//!   3. Yazma HƏMİŞƏ təsdiqlə; oxuma ayara görə (standart — soruş).
-//!   4. Vaxtı keçmiş iş icra edilmir (təsdiq pəncərəsi açıq qalsa da) —
+//!   3. Dəyişən hər şey (yazma, köçürmə, silmə, arxiv, açma) təsdiqlə; oxuma
+//!      ayara görə. "Soruşmadan işlə" (yalnız bu sessiya) təsdiqi söndürür,
+//!      amma proqram işə salmaq (open .exe) HƏMİŞƏ soruşulur.
+//!   4. Silmə həmişə Zibil qutusuna (geri qaytarıla bilir); üzərinə yazılan
+//!      fayl da Zibil qutusuna gedir.
+//!   5. Vaxtı keçmiş iş icra edilmir (təsdiq pəncərəsi açıq qalsa da) —
 //!      bot artıq "alınmadı" deyib, gec yazılan fayl sürpriz olardı.
-//!   5. İcra olunan fayl tipləri (.exe, .bat, .ps1 …) yazılmır.
+//!   6. İcra olunan fayl tipləri (.exe, .bat, .ps1 …) yazılmır.
 
 use std::collections::HashSet;
 use std::fs;
@@ -38,6 +42,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 use tokio_tungstenite::tungstenite::Message;
+
+// Əlavə əməliyyatlar (sənəd mətni, ZIP, disk analizi, bufer, sistem, Zibil qutusu).
+#[path = "bridge_extra.rs"]
+mod extra;
 
 // =====================================================================
 // 1. Konfiqurasiya və xarici interfeys
@@ -103,7 +111,8 @@ pub enum Decision {
 #[derive(Clone, Debug, Serialize)]
 pub struct ApprovalRequest {
     pub job_id: String,
-    /// "read" | "write" (list/search təsdiqsizdir — yalnız adlar görünür).
+    /// "read" | "write" | "move" | "copy" | "delete" | "mkdir"
+    /// (list/search təsdiqsizdir — yalnız adlar görünür).
     pub op: String,
     pub bot_name: String,
     /// Müqavilə formasında yol: "Downloads/hesabat.txt".
@@ -115,6 +124,15 @@ pub struct ApprovalRequest {
     /// Yazmada: mətnin əvvəli (≤ 600 simvol) və ümumi uzunluğu.
     pub preview: Option<String>,
     pub content_chars: Option<usize>,
+    /// Çoxlu əməliyyatda (move/copy/delete): "a.png → Şəkillər/a.png" sətirləri
+    /// (ən çox 200 — pəncərədə hamısı göstərilməsə də sayı `count`-dadır).
+    pub items: Vec<String>,
+    pub count: usize,
+    /// move/copy: mövcud faylın üzərinə yazılacaq (köhnəsi Zibil qutusuna gedir).
+    pub overwrite: bool,
+    /// open: proqram işə salınacaq (.exe, .bat …) — pəncərə qırmızı xəbərdarlıq göstərir.
+    /// Belə əməliyyat "soruşmadan işlə" rejimində də HƏMİŞƏ soruşulur.
+    pub danger: bool,
     /// Pəncərə bu qədər sonra özü bağlanmalıdır (bot artıq gözləmir).
     pub expires_in_ms: u64,
 }
@@ -143,6 +161,14 @@ pub trait Host: Send + Sync + 'static {
     fn status(&self, status: Status);
     /// İcra olunmuş iş haqqında qısa qeyd (fəaliyyət siyahısı üçün, istəyə görə).
     fn activity(&self, _line: String) {}
+    /// Faylı öz proqramında və ya linki brauzerdə aç (lib.rs → opener plagini).
+    fn open(&self, _target: &str, _is_url: bool) -> Result<(), String> {
+        Err("unsupported".into())
+    }
+    /// Windows bildirişi (lib.rs → notification plagini).
+    fn notify(&self, _title: &str, _body: &str) -> Result<(), String> {
+        Err("unsupported".into())
+    }
 }
 
 /// Oxuma (read) üçün təsdiq siyasəti. Yazma həmişə soruşulur.
@@ -254,6 +280,10 @@ struct Inner {
     last_status: Mutex<Option<Status>>,
     /// Hazırda icra olunan işlər — eyni iş iki dəfə başlamasın.
     in_flight: Mutex<HashSet<String>>,
+    /// "Soruşmadan işlə" — yalnız yaddaşda (diskə yazılmır): tətbiq yenidən
+    /// açılanda həmişə təsdiqli rejimə qayıdır. Unudulmuş açar həftələrlə
+    /// açıq qalmasın deyə qəsdən belədir.
+    trust: std::sync::atomic::AtomicBool,
 }
 
 /// Bir RPC cavabı və ya şəbəkə xətası.
@@ -291,6 +321,7 @@ impl Bridge {
                 skew_ms: AtomicI64::new(0),
                 last_status: Mutex::new(None),
                 in_flight: Mutex::new(HashSet::new()),
+                trust: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -318,6 +349,17 @@ impl Bridge {
 
     pub fn read_policy(&self) -> ReadPolicy {
         self.inner.saved.lock().unwrap().read_policy
+    }
+
+    /// "Soruşmadan işlə" (bu sessiya üçün). Açıq olanda heç bir əməliyyat
+    /// təsdiq istəmir; qovluq sərhədi, icra olunan fayl qadağası və silmənin
+    /// Zibil qutusuna getməsi yenə qüvvədədir.
+    pub fn trust(&self) -> bool {
+        self.inner.trust.load(Ordering::Relaxed)
+    }
+
+    pub fn set_trust(&self, on: bool) {
+        self.inner.trust.store(on, Ordering::Relaxed);
     }
 
     pub fn set_read_policy(&self, p: ReadPolicy) -> io::Result<()> {
@@ -649,30 +691,42 @@ async fn handle_job(inner: &Arc<Inner>, token: &str, job: Job) {
         }
     };
 
-    // Yol əvvəlcədən yoxlanır: qovluqdan kənar yol üçün istifadəçini
-    // təsdiq pəncərəsi ilə narahat etməyə dəyməz.
-    let resolved = match resolve(&folders, op.path()) {
-        Ok(r) => r,
+    // Bütün yollar əvvəlcədən yoxlanır: qovluqdan kənar yol üçün istifadəçini
+    // təsdiq pəncərəsi ilə narahat etməyə dəyməz. Çoxlu əməliyyatda bir yol
+    // səhvdirsə heç biri icra olunmur — yarımçıq "səliqə" qalmasın.
+    let pre = match precheck(&folders, &op) {
+        Ok(p) => p,
         Err(e) => {
-            inner.finish(token, &job.id, "error", None, Some(e.code())).await;
+            inner.finish(token, &job.id, "error", None, Some(&e)).await;
             return;
         }
     };
 
-    let needs_approval = match &op {
-        Op::Write { .. } => true,
-        Op::Read { .. } => policy == ReadPolicy::Ask,
-        Op::List { .. } | Op::Search { .. } => false,
-    };
+    let trust = inner.trust.load(Ordering::Relaxed);
+    // Proqram işə salmaq ən riskli addımdır — rejimdən asılı olmayaraq soruşulur.
+    let always = op.is_dangerous();
+    let needs_approval = always
+        || (!trust
+            && match &op {
+                // Oxuma xarakterli: istifadəçinin ayarına görə.
+                Op::Read { .. } | Op::ClipboardGet => policy == ReadPolicy::Ask,
+                // Yalnız adlar/ölçülər/ümumi məlumat — məzmun yox.
+                Op::List { .. } | Op::Search { .. } | Op::Stats { .. } | Op::Duplicates { .. }
+                | Op::SystemInfo | Op::TrashList | Op::Notify { .. } => false,
+                // Nəyisə dəyişən hər şey.
+                Op::Write { .. } | Op::Move { .. } | Op::Copy { .. } | Op::Delete { .. } | Op::Mkdir { .. }
+                | Op::Open { .. } | Op::Zip { .. } | Op::Unzip { .. } | Op::ClipboardSet { .. }
+                | Op::TrashRestore { .. } => true,
+            });
 
     if needs_approval {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let req = approval_request(&job, &op, &resolved, remaining);
+        let req = approval_request(&job, &op, pre, remaining);
         let fut = inner.host.approve(req);
         match tokio::time::timeout(remaining, fut).await {
             Ok(Decision::Allow) => {}
             Ok(Decision::Deny) => {
-                inner.host.activity(format!("✕ {} · {}", op.name(), op.path()));
+                inner.host.activity(format!("✕ {}", op.label()));
                 inner.finish(token, &job.id, "denied", None, None).await;
                 return;
             }
@@ -686,44 +740,153 @@ async fn handle_job(inner: &Arc<Inner>, token: &str, job: Job) {
 
     // Disk əməliyyatı bloklayıcıdır — tokio axınını tutmasın.
     let op2 = op.clone();
-    let res = tokio::task::spawn_blocking(move || execute(&folders, &op2))
+    let host = inner.host.clone();
+    let res = tokio::task::spawn_blocking(move || execute(&folders, &op2, host.as_ref()))
         .await
         .unwrap_or_else(|_| Err(OpError::Other("panic".into())));
 
     match res {
         Ok(result) => {
-            inner.host.activity(format!("✓ {} · {}", op.name(), op.path()));
+            inner.host.activity(format!("{}{}", if trust { "✓⚡ " } else { "✓ " }, op.label()));
             inner.finish(token, &job.id, "done", Some(result), None).await;
         }
         Err(e) => {
-            inner.host.activity(format!("! {} · {} · {}", op.name(), op.path(), e.code()));
+            inner.host.activity(format!("! {} · {}", op.label(), e.code()));
             inner.finish(token, &job.id, "error", None, Some(e.code())).await;
         }
     }
 }
 
-fn approval_request(job: &Job, op: &Op, resolved: &Resolved, remaining: Duration) -> ApprovalRequest {
-    let full_path = match resolved {
-        Resolved::Roots => String::new(),
-        Resolved::Path { abs, .. } => abs.display().to_string(),
+/// Təsdiqdən əvvəlki yoxlamanın nəticəsi: pəncərədə nə göstəriləcək.
+#[derive(Debug)]
+struct Precheck {
+    full_path: String,
+    items: Vec<String>,
+    count: usize,
+}
+
+/// Bütün yolları icradan əvvəl yoxlayır. Xəta mətni: "<kod> · <yol>" —
+/// bot hansı yolun səhv olduğunu görsün və düzəltsin.
+fn precheck(folders: &[Folder], op: &Op) -> Result<Precheck, String> {
+    let err = |e: OpError, p: &str| format!("{} · {}", e.code(), p);
+    // Çoxlu əməliyyatda element: qovluğun özü ola bilməz (rel boş deyil).
+    let inner_path = |p: &str| -> Result<PathBuf, String> {
+        match resolve(folders, p).map_err(|e| err(e, p))? {
+            Resolved::Path { rel, abs, .. } if !rel.is_empty() => Ok(abs),
+            _ => Err(err(OpError::Unsupported, p)),
+        }
     };
+    match op {
+        Op::List { path } | Op::Read { path, .. } | Op::Search { path, .. } | Op::Write { path, .. } => {
+            let full = match resolve(folders, path).map_err(|e| err(e, path))? {
+                Resolved::Roots => String::new(),
+                Resolved::Path { abs, .. } => abs.display().to_string(),
+            };
+            Ok(Precheck { full_path: full, items: vec![], count: 1 })
+        }
+        Op::Mkdir { path } => {
+            let abs = inner_path(path)?;
+            Ok(Precheck { full_path: abs.display().to_string(), items: vec![], count: 1 })
+        }
+        Op::Delete { paths } => {
+            for p in paths {
+                inner_path(p)?;
+            }
+            Ok(Precheck {
+                full_path: String::new(),
+                items: paths.iter().take(APPROVAL_ITEMS).cloned().collect(),
+                count: paths.len(),
+            })
+        }
+        Op::Open { target, url: true } => {
+            if !(target.starts_with("https://") || target.starts_with("http://")) || target.len() > 2000 {
+                return Err(err(OpError::Unsupported, target));
+            }
+            Ok(Precheck { full_path: target.clone(), items: vec![], count: 1 })
+        }
+        Op::Open { target, url: false } => {
+            let abs = inner_path(target)?;
+            Ok(Precheck { full_path: abs.display().to_string(), items: vec![], count: 1 })
+        }
+        Op::Zip { paths, to } => {
+            for p in paths {
+                inner_path(p)?;
+            }
+            let t = inner_path(to)?;
+            Ok(Precheck {
+                full_path: t.display().to_string(),
+                items: paths.iter().take(APPROVAL_ITEMS).cloned().collect(),
+                count: paths.len(),
+            })
+        }
+        Op::Unzip { path, to } => {
+            inner_path(path)?;
+            let t = inner_path(to)?;
+            Ok(Precheck { full_path: t.display().to_string(), items: vec![format!("{path}  →  {to}")], count: 1 })
+        }
+        Op::Stats { path, .. } | Op::Duplicates { path } => {
+            let full = match resolve(folders, path).map_err(|e| err(e, path))? {
+                Resolved::Roots => String::new(),
+                Resolved::Path { abs, .. } => abs.display().to_string(),
+            };
+            Ok(Precheck { full_path: full, items: vec![], count: 1 })
+        }
+        Op::TrashRestore { paths } => {
+            // Fayl hələ Zibil qutusundadır — burada yalnız sözlə yoxlama
+            // (seçilmiş qovluğun adı ilə başlayır, "..", disk hərfi yoxdur).
+            for p in paths {
+                inner_path(p).or_else(|e| if e.starts_with("not_found") { Ok(PathBuf::new()) } else { Err(e) })?;
+            }
+            Ok(Precheck { full_path: String::new(), items: paths.iter().take(APPROVAL_ITEMS).cloned().collect(), count: paths.len() })
+        }
+        Op::ClipboardGet | Op::ClipboardSet { .. } | Op::Notify { .. } | Op::SystemInfo | Op::TrashList => {
+            Ok(Precheck { full_path: String::new(), items: vec![], count: 1 })
+        }
+        Op::Move { items, .. } | Op::Copy { items, .. } => {
+            for (from, to) in items {
+                let f = inner_path(from)?;
+                let t = inner_path(to)?;
+                // Qovluğu öz içinə köçürmək/kopyalamaq sonsuz dövrədir.
+                if t.starts_with(&f) {
+                    return Err(err(OpError::Unsupported, to));
+                }
+            }
+            Ok(Precheck {
+                full_path: String::new(),
+                items: items.iter().take(APPROVAL_ITEMS).map(|(f, t)| format!("{f}  →  {t}")).collect(),
+                count: items.len(),
+            })
+        }
+    }
+}
+
+const APPROVAL_ITEMS: usize = 200;
+
+fn approval_request(job: &Job, op: &Op, pre: Precheck, remaining: Duration) -> ApprovalRequest {
     let (mode, preview, chars) = match op {
         Op::Write { content, mode, .. } => (
             Some(mode.as_str().to_string()),
             Some(truncate_chars(content, 600)),
             Some(content.chars().count()),
         ),
+        Op::ClipboardSet { text } => (None, Some(truncate_chars(text, 600)), Some(text.chars().count())),
         _ => (None, None, None),
     };
+    let overwrite = matches!(op, Op::Move { overwrite: true, .. } | Op::Copy { overwrite: true, .. });
+    let danger = op.is_dangerous();
     ApprovalRequest {
         job_id: job.id.clone(),
         op: op.name().to_string(),
         bot_name: job.bot_name.clone().unwrap_or_else(|| "KalBi Dost".into()),
         path: op.path().to_string(),
-        full_path,
+        full_path: pre.full_path,
         mode,
         preview,
         content_chars: chars,
+        items: pre.items,
+        count: pre.count,
+        overwrite,
+        danger,
         expires_in_ms: remaining.saturating_sub(FINISH_MARGIN).as_millis() as u64,
     }
 }
@@ -1038,6 +1201,71 @@ enum Op {
     Read { path: String, max_chars: usize },
     Search { path: String, query: String, limit: usize },
     Write { path: String, content: String, mode: WriteMode },
+    /// Bir işdə çoxlu köçürmə (səliqəyə salma bir təsdiqlə). Hədəfin ara
+    /// qovluqları avtomatik yaranır.
+    Move { items: Vec<(String, String)>, overwrite: bool },
+    Copy { items: Vec<(String, String)>, overwrite: bool },
+    /// Həmişə Zibil qutusuna (geri qaytarıla bilir), həmişəlik silmə yoxdur.
+    Delete { paths: Vec<String> },
+    Mkdir { path: String },
+    /// Faylı öz proqramında açmaq (url=false) və ya linki brauzerdə (url=true).
+    Open { target: String, url: bool },
+    Zip { paths: Vec<String>, to: String },
+    Unzip { path: String, to: String },
+    /// Ölçü, ən böyük fayllar, uzantılar.
+    Stats { path: String, top: usize },
+    Duplicates { path: String },
+    ClipboardGet,
+    ClipboardSet { text: String },
+    Notify { title: String, body: String },
+    SystemInfo,
+    TrashList,
+    TrashRestore { paths: Vec<String> },
+}
+
+/// "paths": [...] və ya tək "path" — model hər ikisini yaza bilər.
+fn parse_paths(args: &Value, single: &str) -> Result<Vec<String>, OpError> {
+    let mut paths: Vec<String> = match args.get("paths").and_then(Value::as_array) {
+        Some(a) => a.iter().filter_map(Value::as_str).map(str::to_string).collect(),
+        None => vec![],
+    };
+    if paths.is_empty() && !single.is_empty() {
+        paths.push(single.to_string());
+    }
+    if paths.is_empty() {
+        return Err(OpError::Unsupported);
+    }
+    if paths.len() > MULTI_MAX {
+        return Err(OpError::TooLarge);
+    }
+    if paths.iter().any(|p| p.chars().count() > PATH_MAX_CHARS) {
+        return Err(OpError::BadPath);
+    }
+    Ok(paths)
+}
+
+/// Bir işdə ən çox bu qədər element: model səhvən minlərlə əməliyyat
+/// göndərsə də təsdiq pəncərəsi və disk yükü idarə oluna bilsin.
+const MULTI_MAX: usize = 500;
+
+fn parse_pairs(args: &Value) -> Result<Vec<(String, String)>, OpError> {
+    let arr = args.get("items").and_then(Value::as_array).ok_or(OpError::Unsupported)?;
+    if arr.is_empty() {
+        return Err(OpError::Unsupported);
+    }
+    if arr.len() > MULTI_MAX {
+        return Err(OpError::TooLarge);
+    }
+    arr.iter()
+        .map(|it| {
+            let f = it.get("from").and_then(Value::as_str).unwrap_or("");
+            let t = it.get("to").and_then(Value::as_str).unwrap_or("");
+            if f.is_empty() || t.is_empty() || f.chars().count() > PATH_MAX_CHARS || t.chars().count() > PATH_MAX_CHARS {
+                return Err(OpError::BadPath);
+            }
+            Ok((f.to_string(), t.to_string()))
+        })
+        .collect()
 }
 
 impl Op {
@@ -1073,6 +1301,30 @@ impl Op {
                 };
                 Op::Write { path, content: content.to_string(), mode }
             }
+            "move" | "copy" => {
+                let items = parse_pairs(args)?;
+                let overwrite = args.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+                if op == "move" { Op::Move { items, overwrite } } else { Op::Copy { items, overwrite } }
+            }
+            "delete" => Op::Delete { paths: parse_paths(args, &path)? },
+            "mkdir" => Op::Mkdir { path },
+            "open" => {
+                let url = s("url");
+                if !url.is_empty() { Op::Open { target: url, url: true } } else { Op::Open { target: path, url: false } }
+            }
+            "zip" => Op::Zip { paths: parse_paths(args, "")?, to: s("to") },
+            "unzip" => Op::Unzip { path, to: s("to") },
+            "stats" => Op::Stats { path, top: n("top").unwrap_or(20).clamp(1, 100) },
+            "duplicates" => Op::Duplicates { path },
+            "clipboard_get" => Op::ClipboardGet,
+            "clipboard_set" => Op::ClipboardSet { text: s("text") },
+            "notify" => Op::Notify {
+                title: truncate_chars(&s("title"), 100),
+                body: truncate_chars(&s("body"), 400),
+            },
+            "system_info" => Op::SystemInfo,
+            "trash_list" => Op::TrashList,
+            "trash_restore" => Op::TrashRestore { paths: parse_paths(args, &path)? },
             _ => return Err(OpError::Unsupported),
         })
     }
@@ -1083,12 +1335,54 @@ impl Op {
             Op::Read { .. } => "read",
             Op::Search { .. } => "search",
             Op::Write { .. } => "write",
+            Op::Move { .. } => "move",
+            Op::Copy { .. } => "copy",
+            Op::Delete { .. } => "delete",
+            Op::Mkdir { .. } => "mkdir",
+            Op::Open { .. } => "open",
+            Op::Zip { .. } => "zip",
+            Op::Unzip { .. } => "unzip",
+            Op::Stats { .. } => "stats",
+            Op::Duplicates { .. } => "duplicates",
+            Op::ClipboardGet => "clipboard_get",
+            Op::ClipboardSet { .. } => "clipboard_set",
+            Op::Notify { .. } => "notify",
+            Op::SystemInfo => "system_info",
+            Op::TrashList => "trash_list",
+            Op::TrashRestore { .. } => "trash_restore",
         }
     }
 
+    /// Proqram işə salan əməliyyat: icra olunan faylı açmaq. Həmişə soruşulur.
+    fn is_dangerous(&self) -> bool {
+        matches!(self, Op::Open { target, url: false } if is_executable_name(target))
+    }
+
+    /// Əsas yol (tək əməliyyatda) və ya birinci element (çoxluda).
     fn path(&self) -> &str {
         match self {
-            Op::List { path } | Op::Read { path, .. } | Op::Search { path, .. } | Op::Write { path, .. } => path,
+            Op::List { path } | Op::Read { path, .. } | Op::Search { path, .. } | Op::Write { path, .. } | Op::Mkdir { path }
+            | Op::Unzip { path, .. } | Op::Stats { path, .. } | Op::Duplicates { path } => path,
+            Op::Open { target, .. } => target,
+            Op::Move { items, .. } | Op::Copy { items, .. } => items.first().map(|x| x.0.as_str()).unwrap_or(""),
+            Op::Delete { paths } | Op::Zip { paths, .. } | Op::TrashRestore { paths } => {
+                paths.first().map(String::as_str).unwrap_or("")
+            }
+            Op::ClipboardGet | Op::ClipboardSet { .. } | Op::Notify { .. } | Op::SystemInfo | Op::TrashList => "",
+        }
+    }
+
+    /// Fəaliyyət siyahısı üçün qısa sətir: "move · 12 fayl" və ya "read · Docs/a.txt".
+    fn label(&self) -> String {
+        let n = match self {
+            Op::Move { items, .. } | Op::Copy { items, .. } => items.len(),
+            Op::Delete { paths } | Op::Zip { paths, .. } | Op::TrashRestore { paths } => paths.len(),
+            _ => 1,
+        };
+        if n > 1 {
+            format!("{} · {} × ({}…)", self.name(), n, self.path())
+        } else {
+            format!("{} · {}", self.name(), self.path())
         }
     }
 }
@@ -1235,13 +1529,48 @@ fn contract_path(folder: &Folder, rel: &[String]) -> String {
     s
 }
 
-fn execute(folders: &[Folder], op: &Op) -> Result<Value, OpError> {
+fn execute(folders: &[Folder], op: &Op, host: &dyn Host) -> Result<Value, OpError> {
+    // Yolsuz əməliyyatlar (bufer, sistem, bildiriş, Zibil qutusu, link) —
+    // qovluq seçilməsə də işləyir.
+    match op {
+        Op::ClipboardGet => return extra::op_clipboard_get(),
+        Op::ClipboardSet { text } => return extra::op_clipboard_set(text),
+        Op::SystemInfo => return extra::op_system_info(),
+        Op::Notify { title, body } => {
+            host.notify(title, body).map_err(OpError::Other)?;
+            return Ok(json!({ "shown": true }));
+        }
+        Op::Open { target, url: true } => {
+            host.open(target, true).map_err(OpError::Other)?;
+            return Ok(json!({ "opened": target }));
+        }
+        Op::TrashList => return extra::op_trash_list(folders),
+        Op::TrashRestore { paths } => return extra::op_trash_restore(folders, paths),
+        Op::Zip { paths, to } => return extra::op_zip(folders, paths, to),
+        Op::Unzip { path, to } => return extra::op_unzip(folders, path, to),
+        _ => {}
+    }
     let resolved = resolve(folders, op.path())?;
     match op {
         Op::List { .. } => op_list(folders, &resolved),
         Op::Read { max_chars, .. } => op_read(&resolved, *max_chars),
         Op::Search { query, limit, .. } => op_search(folders, &resolved, query, *limit),
         Op::Write { content, mode, .. } => op_write(&resolved, content, mode),
+        Op::Move { items, overwrite } => op_transfer(folders, items, *overwrite, false),
+        Op::Copy { items, overwrite } => op_transfer(folders, items, *overwrite, true),
+        Op::Delete { paths } => op_delete(folders, paths),
+        Op::Mkdir { .. } => op_mkdir(&resolved),
+        Op::Stats { top, .. } => extra::op_stats(folders, &resolved, *top),
+        Op::Duplicates { .. } => extra::op_duplicates(folders, &resolved),
+        Op::Open { target, url: false } => {
+            let Resolved::Path { abs, .. } = &resolved else { return Err(OpError::Unsupported) };
+            fs::symlink_metadata(abs).map_err(io_err)?;
+            host.open(&abs.display().to_string(), false).map_err(OpError::Other)?;
+            Ok(json!({ "opened": target }))
+        }
+        // Yuxarıda qaytarılıb — bura çatmır.
+        Op::ClipboardGet | Op::ClipboardSet { .. } | Op::SystemInfo | Op::Notify { .. } | Op::Open { .. }
+        | Op::TrashList | Op::TrashRestore { .. } | Op::Zip { .. } | Op::Unzip { .. } => Err(OpError::Unsupported),
     }
 }
 
@@ -1312,6 +1641,25 @@ fn op_read(r: &Resolved, max_chars: usize) -> Result<Value, OpError> {
         return Err(OpError::Unsupported);
     }
     let size = meta.len();
+    // PDF, Word, PowerPoint, Excel — mətn çıxarılır (v0.3.0). Skan edilmiş PDF-də
+    // mətn olmur: boş qayıdır, `kind` ilə bot bunu istifadəçiyə deyə bilir.
+    if let Some((kind, doc)) = extra::document_text(abs, size) {
+        let text = match doc {
+            Ok(t) => t,
+            Err(OpError::TooLarge) => return Err(OpError::TooLarge),
+            // Xarab/şifrəli sənəd: xəta yox, "oxunmadı" — bot istifadəçiyə izah edə bilsin.
+            Err(e) => return Ok(json!({ "size": size, "kind": kind, "unreadable": e.code() })),
+        };
+        let total = text.chars().count();
+        let mut out = json!({ "text": truncate_chars(&text, max_chars), "size": size, "kind": kind });
+        if total > max_chars {
+            out["truncated"] = json!(true);
+        }
+        if text.trim().is_empty() {
+            out["empty"] = json!(true);
+        }
+        return Ok(out);
+    }
     if let Some(kind) = binary_kind(abs) {
         return Ok(json!({ "size": size, "kind": kind }));
     }
@@ -1569,6 +1917,164 @@ fn op_write(r: &Resolved, content: &str, mode: &WriteMode) -> Result<Value, OpEr
     Ok(out)
 }
 
+/// Qovluq kopyalamada fayl limiti — bot səhvən böyük qovluğu (məs. node_modules)
+/// kopyalayıb diski doldurmasın.
+const COPY_MAX_FILES: usize = 20_000;
+
+/// Resolve edilmiş element (qovluğun özü ola bilməz — precheck bunu yoxlayıb).
+fn resolve_item(folders: &[Folder], p: &str) -> Result<(Folder, Vec<String>, PathBuf), OpError> {
+    match resolve(folders, p)? {
+        Resolved::Path { folder, rel, abs } if !rel.is_empty() => Ok((folder, rel, abs)),
+        _ => Err(OpError::Unsupported),
+    }
+}
+
+fn ext_of(name: &str) -> String {
+    Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+}
+
+/// move/copy: hər element ayrıca; biri alınmasa digərləri davam edir və
+/// nəticədə `failed` siyahısında görünür (bot istifadəçiyə deyə bilsin).
+fn op_transfer(folders: &[Folder], items: &[(String, String)], overwrite: bool, copy: bool) -> Result<Value, OpError> {
+    let mut done = Vec::new();
+    let mut failed = Vec::new();
+    for (from, to) in items {
+        match transfer_one(folders, from, to, overwrite, copy) {
+            Ok(()) => done.push(json!({ "from": from, "to": to })),
+            Err(e) => failed.push(json!({ "from": from, "error": e.code() })),
+        }
+    }
+    let key = if copy { "copied" } else { "moved" };
+    let mut out = json!({ key: done });
+    if !failed.is_empty() {
+        out["failed"] = json!(failed);
+    }
+    Ok(out)
+}
+
+fn transfer_one(folders: &[Folder], from: &str, to: &str, overwrite: bool, copy: bool) -> Result<(), OpError> {
+    let (_, _, src) = resolve_item(folders, from)?;
+    let (dfolder, drel, dst) = resolve_item(folders, to)?;
+    let smeta = fs::symlink_metadata(&src).map_err(io_err)?;
+    if dst.starts_with(&src) {
+        return Err(OpError::Unsupported);
+    }
+    // Adı dəyişməklə icra olunan fayl yaratmaq olmaz ("qeyd.txt" → "qeyd.bat").
+    // Mövcud .exe/.lnk-i eyni uzantı ilə köçürmək olar (masaüstündəki qısayollar).
+    let dname = drel.last().unwrap();
+    let sname = src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    if smeta.is_file() && is_executable_name(dname) && ext_of(dname) != ext_of(&sname) {
+        return Err(OpError::Unsupported);
+    }
+    match fs::symlink_metadata(&dst) {
+        Ok(dm) => {
+            if !overwrite {
+                return Err(OpError::Exists);
+            }
+            if dm.is_dir() || smeta.is_dir() {
+                return Err(OpError::Unsupported); // qovluğu qovluğun üzərinə yazmırıq
+            }
+            // Üzərinə yazılan köhnə fayl itmir — Zibil qutusuna gedir.
+            trash::delete(&dst).map_err(|e| OpError::Other(truncate_chars(&e.to_string(), 200)))?;
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io_err(e)),
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(io_err)?;
+        ensure_inside(&dfolder.path, parent)?;
+    }
+    if copy {
+        if smeta.is_dir() {
+            let mut n = 0usize;
+            copy_dir(&src, &dst, &mut n)?;
+        } else {
+            fs::copy(&src, &dst).map_err(io_err)?;
+        }
+        return Ok(());
+    }
+    // Eyni diskdə rename ani və atomikdir. Başqa diskə (C: → D:) rename
+    // alınmır — onda kopyalayıb mənbəni silirik.
+    if fs::rename(&src, &dst).is_ok() {
+        return Ok(());
+    }
+    if smeta.is_dir() {
+        let mut n = 0usize;
+        copy_dir(&src, &dst, &mut n)?;
+        fs::remove_dir_all(&src).map_err(io_err)?;
+    } else {
+        fs::copy(&src, &dst).map_err(io_err)?;
+        fs::remove_file(&src).map_err(io_err)?;
+    }
+    Ok(())
+}
+
+/// Qovluğu rekursiv kopyalayır. Simvolik linkləri atlayır (qovluqdan kənara
+/// aparıb oradakı faylları içəri kopyalamasın).
+fn copy_dir(src: &Path, dst: &Path, count: &mut usize) -> Result<(), OpError> {
+    fs::create_dir_all(dst).map_err(io_err)?;
+    for entry in fs::read_dir(src).map_err(io_err)? {
+        let entry = entry.map_err(io_err)?;
+        let ft = entry.file_type().map_err(io_err)?;
+        if ft.is_symlink() {
+            continue;
+        }
+        let to = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir(&entry.path(), &to, count)?;
+        } else {
+            *count += 1;
+            if *count > COPY_MAX_FILES {
+                return Err(OpError::TooLarge);
+            }
+            fs::copy(entry.path(), &to).map_err(io_err)?;
+        }
+    }
+    Ok(())
+}
+
+/// Silmə = Zibil qutusu (Windows Recycle Bin). Həmişəlik silmə qəsdən yoxdur:
+/// model səhv faylı seçsə də istifadəçi geri qaytara bilsin.
+fn op_delete(folders: &[Folder], paths: &[String]) -> Result<Value, OpError> {
+    let mut deleted = Vec::new();
+    let mut failed = Vec::new();
+    for p in paths {
+        let r = resolve_item(folders, p).and_then(|(_, _, abs)| {
+            fs::symlink_metadata(&abs).map_err(io_err)?;
+            trash::delete(&abs).map_err(|e| OpError::Other(truncate_chars(&e.to_string(), 200)))
+        });
+        match r {
+            Ok(()) => deleted.push(json!(p)),
+            Err(e) => failed.push(json!({ "path": p, "error": e.code() })),
+        }
+    }
+    let mut out = json!({ "deleted": deleted, "trash": true });
+    if !failed.is_empty() {
+        out["failed"] = json!(failed);
+    }
+    Ok(out)
+}
+
+fn op_mkdir(r: &Resolved) -> Result<Value, OpError> {
+    let Resolved::Path { folder, rel, abs } = r else {
+        return Err(OpError::Unsupported);
+    };
+    if rel.is_empty() {
+        return Err(OpError::Unsupported);
+    }
+    let existed = abs.is_dir();
+    if abs.exists() && !existed {
+        return Err(OpError::Exists); // eyni adda fayl var
+    }
+    fs::create_dir_all(abs).map_err(io_err)?;
+    ensure_inside(&folder.path, abs)?;
+    let mut out = json!({ "path": contract_path(folder, rel) });
+    if !existed {
+        out["created"] = json!(true);
+    }
+    Ok(out)
+}
+
 // =====================================================================
 // 6. Kiçik köməkçilər
 // =====================================================================
@@ -1622,6 +2128,14 @@ fn is_too_broad(p: &Path) -> bool {
 mod tests {
     use super::*;
 
+    struct NullHost;
+    impl Host for NullHost {
+        fn approve(&self, _req: ApprovalRequest) -> BoxFuture<Decision> {
+            Box::pin(async { Decision::Deny })
+        }
+        fn status(&self, _s: Status) {}
+    }
+
     fn folder(dir: &Path, name: &str) -> Folder {
         let p = dir.join(name);
         fs::create_dir_all(&p).unwrap();
@@ -1667,12 +2181,12 @@ mod tests {
         // Hələ olmayan fayl da link vasitəsilə kənara yazıla bilməz.
         assert_eq!(resolve(&f, "D/link/new.txt").unwrap_err(), OpError::OutsideFolders);
         // Axtarış linkə girmir.
-        let out = execute(&f, &Op::Search { path: "D".into(), query: "p".into(), limit: 10 }).unwrap();
+        let out = execute(&f, &Op::Search { path: "D".into(), query: "p".into(), limit: 10 }, &NullHost).unwrap();
         assert_eq!(out["matches"].as_array().unwrap().len(), 0);
         // Fayl linkinin üzərinə yazılmır.
         std::os::unix::fs::symlink(outside.join("p.txt"), f[0].path.join("p.txt")).unwrap();
         let w = Op::Write { path: "D/p.txt".into(), content: "x".into(), mode: WriteMode::Overwrite };
-        assert_eq!(execute(&f, &w).unwrap_err(), OpError::OutsideFolders);
+        assert_eq!(execute(&f, &w, &NullHost).unwrap_err(), OpError::OutsideFolders);
         assert_eq!(fs::read_to_string(outside.join("p.txt")).unwrap(), "parol");
     }
 
@@ -1687,10 +2201,10 @@ mod tests {
         fs::write(f[0].path.join("bin.dat"), [1u8, 0, 2, 3]).unwrap();
 
         // list (kök)
-        let v = execute(&f, &Op::List { path: "".into() }).unwrap();
+        let v = execute(&f, &Op::List { path: "".into() }, &NullHost).unwrap();
         assert_eq!(v["entries"][0]["name"], "Docs");
         // list (qovluq): əvvəl qovluq
-        let v = execute(&f, &Op::List { path: "Docs".into() }).unwrap();
+        let v = execute(&f, &Op::List { path: "Docs".into() }, &NullHost).unwrap();
         let e = v["entries"].as_array().unwrap();
         assert_eq!(e[0]["name"], "Alt");
         assert_eq!(e[0]["dir"], true);
@@ -1698,32 +2212,32 @@ mod tests {
         assert!(e[1]["modified"].as_str().unwrap().ends_with('Z'));
 
         // read
-        let v = execute(&f, &Op::Read { path: "Docs/Hesabat 2025.txt".into(), max_chars: 100 }).unwrap();
+        let v = execute(&f, &Op::Read { path: "Docs/Hesabat 2025.txt".into(), max_chars: 100 }, &NullHost).unwrap();
         assert_eq!(v["text"], "Salam, dünya! Şəki");
         assert!(v.get("truncated").is_none());
-        let v = execute(&f, &Op::Read { path: "Docs/Hesabat 2025.txt".into(), max_chars: 5 }).unwrap();
+        let v = execute(&f, &Op::Read { path: "Docs/Hesabat 2025.txt".into(), max_chars: 5 }, &NullHost).unwrap();
         assert_eq!(v["text"], "Salam");
         assert_eq!(v["truncated"], true);
-        let v = execute(&f, &Op::Read { path: "Docs/doc.pdf".into(), max_chars: 100 }).unwrap();
+        let v = execute(&f, &Op::Read { path: "Docs/doc.pdf".into(), max_chars: 100 }, &NullHost).unwrap();
         assert_eq!(v["kind"], "pdf");
-        assert!(v.get("text").is_none());
-        let v = execute(&f, &Op::Read { path: "Docs/bin.dat".into(), max_chars: 100 }).unwrap();
+        assert!(v.get("text").is_none() && v.get("unreadable").is_some(), "xarab PDF: {v}");
+        let v = execute(&f, &Op::Read { path: "Docs/bin.dat".into(), max_chars: 100 }, &NullHost).unwrap();
         assert_eq!(v["kind"], "binary");
         assert_eq!(
-            execute(&f, &Op::Read { path: "Docs/yoxdur.txt".into(), max_chars: 9 }).unwrap_err(),
+            execute(&f, &Op::Read { path: "Docs/yoxdur.txt".into(), max_chars: 9 }, &NullHost).unwrap_err(),
             OpError::NotFound
         );
 
         // search: söz, şablon, alt qovluq
-        let v = execute(&f, &Op::Search { path: "".into(), query: "hesabat 2025".into(), limit: 10 }).unwrap();
+        let v = execute(&f, &Op::Search { path: "".into(), query: "hesabat 2025".into(), limit: 10 }, &NullHost).unwrap();
         assert_eq!(v["matches"][0]["path"], "Docs/Hesabat 2025.txt");
-        let v = execute(&f, &Op::Search { path: "Docs".into(), query: "*.md".into(), limit: 10 }).unwrap();
+        let v = execute(&f, &Op::Search { path: "Docs".into(), query: "*.md".into(), limit: 10 }, &NullHost).unwrap();
         assert_eq!(v["matches"][0]["path"], "Docs/Alt/plan.md");
-        let v = execute(&f, &Op::Search { path: "".into(), query: "a".into(), limit: 1 }).unwrap();
+        let v = execute(&f, &Op::Search { path: "".into(), query: "a".into(), limit: 1 }, &NullHost).unwrap();
         assert_eq!(v["truncated"], true);
 
         // write: create → exists → overwrite → append; ara qovluq yaranır
-        let w = |p: &str, c: &str, m: WriteMode| execute(&f, &Op::Write { path: p.into(), content: c.into(), mode: m });
+        let w = |p: &str, c: &str, m: WriteMode| execute(&f, &Op::Write { path: p.into(), content: c.into(), mode: m }, &NullHost);
         let v = w("Docs/Yeni/qeyd.txt", "bir", WriteMode::Create).unwrap();
         assert_eq!(v["path"], "Docs/Yeni/qeyd.txt");
         assert_eq!(v["created"], true);
@@ -1781,4 +2295,172 @@ mod tests {
         assert_eq!(j["topic"], "realtime:dost-dev:ab");
         assert_eq!(j["payload"]["config"]["private"], false);
     }
+    // ---------------- v0.3.0 əməliyyatları ----------------
+
+    fn ex(f: &[Folder], op: &str, args: Value) -> Result<Value, OpError> {
+        let op = Op::parse(op, &args)?;
+        precheck(f, &op).map_err(OpError::Other)?;
+        execute(f, &op, &NullHost)
+    }
+
+    #[test]
+    fn move_copy_mkdir_batch() {
+        let t = tempfile::tempdir().unwrap();
+        let f = vec![folder(t.path(), "Masaüstü"), folder(t.path(), "Sənədlər")];
+        for n in ["a.png", "b.jpg", "c.pdf", "qısayol.lnk"] {
+            fs::write(f[0].path.join(n), n).unwrap();
+        }
+        // Səliqəyə salma: bir işdə çoxlu köçürmə, hədəf qovluqlar avtomatik.
+        let v = ex(&f, "move", json!({"items": [
+            {"from": "Masaüstü/a.png", "to": "Masaüstü/Şəkillər/a.png"},
+            {"from": "Masaüstü/b.jpg", "to": "Masaüstü/Şəkillər/b.jpg"},
+            {"from": "Masaüstü/c.pdf", "to": "Sənədlər/PDF/c.pdf"},
+            {"from": "Masaüstü/qısayol.lnk", "to": "Masaüstü/Qısayollar/qısayol.lnk"},
+            {"from": "Masaüstü/yoxdur.txt", "to": "Masaüstü/x/yoxdur.txt"}
+        ]})).unwrap();
+        assert_eq!(v["moved"].as_array().unwrap().len(), 4, "{v}");
+        assert_eq!(v["failed"][0]["error"], "not_found");
+        assert!(f[0].path.join("Şəkillər/b.jpg").exists() && f[1].path.join("PDF/c.pdf").exists());
+        assert!(!f[0].path.join("a.png").exists());
+        // Mövcud hədəf: overwrite olmadan "exists"
+        fs::write(f[0].path.join("d.txt"), "yeni").unwrap();
+        fs::write(f[0].path.join("Şəkillər/d.txt"), "köhnə").unwrap();
+        let v = ex(&f, "move", json!({"items": [{"from": "Masaüstü/d.txt", "to": "Masaüstü/Şəkillər/d.txt"}]})).unwrap();
+        assert_eq!(v["failed"][0]["error"], "exists");
+        // Adı dəyişməklə .bat yaratmaq olmaz
+        let v = ex(&f, "move", json!({"items": [{"from": "Masaüstü/d.txt", "to": "Masaüstü/d.bat"}]})).unwrap();
+        assert_eq!(v["failed"][0]["error"], "unsupported");
+        // Qovluğu öz içinə — ön yoxlamada rədd (heç biri icra olunmur)
+        assert!(ex(&f, "move", json!({"items": [{"from": "Masaüstü/Şəkillər", "to": "Masaüstü/Şəkillər/alt"}]})).is_err());
+        // Seçilmiş qovluğun özünü köçürmək olmaz
+        assert!(ex(&f, "move", json!({"items": [{"from": "Masaüstü", "to": "Sənədlər/M"}]})).is_err());
+        // Kopya: qovluq rekursiv
+        let v = ex(&f, "copy", json!({"items": [{"from": "Masaüstü/Şəkillər", "to": "Sənədlər/Şəkil kopyası"}]})).unwrap();
+        assert_eq!(v["copied"].as_array().unwrap().len(), 1);
+        assert!(f[1].path.join("Şəkil kopyası/a.png").exists() && f[0].path.join("Şəkillər/a.png").exists());
+        // mkdir
+        let v = ex(&f, "mkdir", json!({"path": "Sənədlər/2026/Noyabr"})).unwrap();
+        assert_eq!(v["created"], true);
+        assert!(ex(&f, "mkdir", json!({"path": "Sənədlər"})).is_err(), "kökün özü");
+        // Limit
+        let many: Vec<Value> = (0..501).map(|i| json!({"from": format!("Masaüstü/{i}"), "to": format!("Masaüstü/x{i}")})).collect();
+        assert!(matches!(Op::parse("move", &json!({"items": many})), Err(OpError::TooLarge)));
+    }
+
+    #[test]
+    fn delete_to_trash_and_restore() {
+        // Linux-da freedesktop Zibil qutusu ($XDG_DATA_HOME/Trash) — Windows-da Recycle Bin.
+        let t = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", t.path().join("xdg"));
+        let f = vec![folder(t.path(), "Desk")];
+        fs::write(f[0].path.join("köhnə.txt"), "salam").unwrap();
+        fs::create_dir_all(f[0].path.join("Boş qovluq")).unwrap();
+        let v = ex(&f, "delete", json!({"paths": ["Desk/köhnə.txt", "Desk/Boş qovluq", "Desk/yoxdur"]})).unwrap();
+        assert_eq!(v["deleted"].as_array().unwrap().len(), 2, "{v}");
+        assert_eq!(v["trash"], true);
+        assert!(!f[0].path.join("köhnə.txt").exists());
+        assert!(ex(&f, "delete", json!({"paths": ["Desk"]})).is_err(), "seçilmiş qovluğun özü silinmir");
+        let v = ex(&f, "trash_list", json!({})).unwrap();
+        let items: Vec<String> = v["items"].as_array().unwrap().iter().map(|i| i["path"].as_str().unwrap().to_string()).collect();
+        assert!(items.contains(&"Desk/köhnə.txt".to_string()), "{v}");
+        let v = ex(&f, "trash_restore", json!({"paths": ["Desk/köhnə.txt"]})).unwrap();
+        assert_eq!(v["restored"][0], "Desk/köhnə.txt", "{v}");
+        assert_eq!(fs::read_to_string(f[0].path.join("köhnə.txt")).unwrap(), "salam");
+    }
+
+    #[test]
+    fn zip_unzip_safety() {
+        let t = tempfile::tempdir().unwrap();
+        let f = vec![folder(t.path(), "D")];
+        fs::create_dir_all(f[0].path.join("Layihə/alt")).unwrap();
+        fs::write(f[0].path.join("Layihə/a.txt"), "aaa").unwrap();
+        fs::write(f[0].path.join("Layihə/alt/b.txt"), "bbb").unwrap();
+        let v = ex(&f, "zip", json!({"paths": ["D/Layihə"], "to": "D/arxiv.zip"})).unwrap();
+        assert_eq!(v["files"], 2, "{v}");
+        assert!(ex(&f, "zip", json!({"paths": ["D/Layihə"], "to": "D/arxiv.zip"})).is_err(), "mövcud arxiv");
+        assert!(ex(&f, "zip", json!({"paths": ["D/Layihə"], "to": "D/arxiv.txt"})).is_err(), ".zip olmalıdır");
+        let v = ex(&f, "unzip", json!({"path": "D/arxiv.zip", "to": "D/Açılmış"})).unwrap();
+        assert_eq!(v["files"], 2);
+        assert_eq!(fs::read_to_string(f[0].path.join("Açılmış/Layihə/alt/b.txt")).unwrap(), "bbb");
+        // Təhlükəli arxiv: ../ ilə kənara yazma və .exe
+        let evil = f[0].path.join("pis.zip");
+        {
+            let mut zw = zip::ZipWriter::new(fs::File::create(&evil).unwrap());
+            let o = zip::write::SimpleFileOptions::default();
+            zw.start_file("../../qaçış.txt", o).unwrap();
+            zw.write_all(b"x").unwrap();
+            zw.start_file("virus.exe", o).unwrap();
+            zw.write_all(b"MZ").unwrap();
+            zw.start_file("normal.txt", o).unwrap();
+            zw.write_all(b"ok").unwrap();
+            zw.finish().unwrap();
+        }
+        let v = ex(&f, "unzip", json!({"path": "D/pis.zip", "to": "D/P"})).unwrap();
+        assert_eq!(v["files"], 1, "{v}");
+        assert_eq!(v["skipped"].as_array().unwrap().len(), 2);
+        assert!(!t.path().join("qaçış.txt").exists() && !f[0].path.join("P/virus.exe").exists());
+    }
+
+    #[test]
+    fn stats_duplicates_documents() {
+        let t = tempfile::tempdir().unwrap();
+        let f = vec![folder(t.path(), "D")];
+        let big = vec![7u8; 5000];
+        fs::write(f[0].path.join("x.bin"), &big).unwrap();
+        fs::create_dir_all(f[0].path.join("alt")).unwrap();
+        fs::write(f[0].path.join("alt/x kopya.bin"), &big).unwrap();
+        fs::write(f[0].path.join("başqa.bin"), vec![8u8; 5000]).unwrap();
+        fs::write(f[0].path.join("kiçik.txt"), "a").unwrap();
+        let v = ex(&f, "stats", json!({"path": "D", "top": 2})).unwrap();
+        assert_eq!(v["files"], 4);
+        assert_eq!(v["bytes"], 15001);
+        assert_eq!(v["largest"].as_array().unwrap().len(), 2);
+        assert_eq!(v["by_ext"][0]["ext"], "bin");
+        let v = ex(&f, "duplicates", json!({"path": ""})).unwrap();
+        assert_eq!(v["groups"].as_array().unwrap().len(), 1, "{v}");
+        assert_eq!(v["groups"][0]["paths"].as_array().unwrap().len(), 2);
+        assert_eq!(v["wasted_bytes"], 5000);
+
+        // docx və pptx: ZIP içində XML
+        let mk = |name: &str, files: &[(&str, &str)]| {
+            let mut zw = zip::ZipWriter::new(fs::File::create(f[0].path.join(name)).unwrap());
+            for (n, c) in files {
+                zw.start_file(*n, zip::write::SimpleFileOptions::default()).unwrap();
+                zw.write_all(c.as_bytes()).unwrap();
+            }
+            zw.finish().unwrap();
+        };
+        mk("m.docx", &[("word/document.xml", r#"<w:document><w:body><w:p><w:r><w:t>Salam</w:t></w:r><w:r><w:t xml:space="preserve"> dünya &amp; Şəki</w:t></w:r><w:r><w:tab/></w:r></w:p><w:p><w:r><w:t>İkinci</w:t></w:r></w:p></w:body></w:document>"#)]);
+        let v = ex(&f, "read", json!({"path": "D/m.docx"})).unwrap();
+        assert_eq!(v["kind"], "docx");
+        assert_eq!(v["text"].as_str().unwrap().trim(), "Salam dünya & Şəki\nİkinci", "{v}");
+        mk("s.pptx", &[("ppt/slides/slide2.xml", "<p:sld><a:p><a:r><a:t>İki</a:t></a:r></a:p></p:sld>"),
+                       ("ppt/slides/slide1.xml", "<p:sld><a:p><a:r><a:t>Bir</a:t></a:r></a:p></p:sld>")]);
+        let v = ex(&f, "read", json!({"path": "D/s.pptx"})).unwrap();
+        let txt = v["text"].as_str().unwrap();
+        assert!(txt.find("Bir").unwrap() < txt.find("İki").unwrap(), "slayd sırası: {txt}");
+        // Xarab docx → xəta yox, "unreadable"
+        fs::write(f[0].path.join("xarab.docx"), "deyil").unwrap();
+        let v = ex(&f, "read", json!({"path": "D/xarab.docx"})).unwrap();
+        assert!(v.get("unreadable").is_some(), "{v}");
+        // Sistem məlumatı — şəxsi sahə yoxdur
+        let v = ex(&f, "system_info", json!({})).unwrap();
+        assert!(v.get("ram_total").is_some() && v.get("disks").is_some());
+        assert!(v.get("host").is_none() && v.get("user").is_none());
+    }
+
+    #[test]
+    fn approval_flags() {
+        let open_exe = Op::parse("open", &json!({"path": "D/setup.exe"})).unwrap();
+        assert!(open_exe.is_dangerous());
+        assert!(!Op::parse("open", &json!({"path": "D/a.pdf"})).unwrap().is_dangerous());
+        let t = tempfile::tempdir().unwrap();
+        let f = vec![folder(t.path(), "D")];
+        assert!(precheck(&f, &Op::parse("open", &json!({"url": "javascript:alert(1)"})).unwrap()).is_err());
+        assert!(precheck(&f, &Op::parse("open", &json!({"url": "file:///C:/x"})).unwrap()).is_err());
+        assert!(precheck(&f, &Op::parse("open", &json!({"url": "https://kalbi.pro"})).unwrap()).is_ok());
+        let e = precheck(&f, &Op::parse("delete", &json!({"paths": ["D/a", "Başqa/b"]})).unwrap()).unwrap_err();
+        assert!(e.starts_with("outside_folders · Başqa/b"), "{e}");
+    }
+
 }

@@ -9,6 +9,7 @@
     "allow-bridge-add-folder",
     "allow-bridge-remove-folder",
     "allow-bridge-set-read-policy",
+    "allow-bridge-set-trust",
     "allow-approval-get",
     "allow-approval-decide"
   ]
